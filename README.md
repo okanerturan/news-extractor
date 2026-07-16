@@ -85,7 +85,7 @@ The CLI exits `0` only when every requested URL succeeds, `1` when any extractio
 ## Extraction pipeline
 
 1. Validate an `http`/`https` URL and reject embedded credentials, port zero, and invalid ports.
-2. Resolve the hostname under the fetch deadline; apply an explicit public-address policy to every answer and recursively validate IPv4 destinations embedded in transition formats.
+2. Resolve the hostname under the fetch deadline and a process-wide eight-worker capacity bound; apply an explicit public-address policy to every answer and recursively validate IPv4 destinations embedded in transition formats.
 3. Connect the socket to the vetted address while preserving the original hostname for TLS verification and the `Host` header.
 4. Repeat validation for every redirect, share the original deadline across the full chain, and reject HTTPS-to-HTTP downgrades.
 5. Require HTML/XHTML, identity encoding, a bounded response body, a bounded redirect count, and an absolute deadline that cannot be extended by slow headers or body bytes.
@@ -119,7 +119,9 @@ Sites expose inconsistent metadata, so `title`, `date`, `description`, `image`, 
 
 ## Network security defaults
 
-The default client uses explicit IPv4 and IPv6 network tables rather than Python's release-dependent `ipaddress.is_global` classification. It blocks private, loopback, link-local, shared, documentation, benchmark, reserved, site-local, multicast, unspecified, and deprecated transition ranges—including mixed DNS answers where only one answer is denied. IPv4-mapped, 6to4, Teredo, and well-known NAT64 forms are recursively checked so they cannot conceal a denied IPv4 destination. The globally reachable `192.0.0.9` and `192.0.0.10` anycast exceptions remain allowed.
+The default client uses explicit IPv4 and IPv6 network tables rather than Python's release-dependent `ipaddress.is_global` classification. It blocks private, loopback, link-local, shared, documentation, benchmark, reserved, site-local, multicast, unspecified, and deprecated transition ranges—including mixed DNS answers where only one answer is denied. IPv4-mapped, 6to4, Teredo, well-known NAT64, and both ISATAP interface-ID forms are recursively checked so they cannot conceal a denied IPv4 destination. The globally reachable `192.0.0.9` and `192.0.0.10` anycast exceptions remain allowed.
+
+Synchronous resolver calls run behind one process-wide capacity gate shared by all clients. At most eight DNS worker threads can be outstanding; waiting for capacity consumes the same absolute fetch deadline, and saturation fails closed without creating another worker.
 
 For a trusted internal deployment only, opt in explicitly:
 
@@ -172,10 +174,10 @@ python examples/scrape_news_gatherer_backlog.py \
   --limit 50 \
   --format json > /tmp/news-extractor-backlog.jsonl
 
-python examples/view_jsonl.py /tmp/news-extractor-backlog.jsonl --limit 10
+python examples/view_jsonl.py --file /tmp/news-extractor-backlog.jsonl --limit 10
 ```
 
-Open `examples/backlog_viewer.html` locally and choose a JSONL file for a searchable visual inspection. The tracked root `backlog.jsonl` is a November 2025 legacy output sample; its old `newspaper4k`/`trafilatura` method labels are historical data, not current runtime values.
+Open `examples/backlog_viewer.html` locally for a searchable visual inspection of the tracked root `backlog.jsonl`, which the page loads directly. That file is a November 2025 legacy output sample; its old `newspaper4k`/`trafilatura` method labels are historical data, not current runtime values.
 
 ## Verification
 

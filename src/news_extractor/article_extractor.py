@@ -60,6 +60,8 @@ _ANSI_OSC = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
 _ANSI_CSI = re.compile(r"(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]")
 _ANSI_TWO_BYTE = re.compile(r"\x1b[@-_]")
 _URL_IN_TEXT = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
+_DNS_WORKER_LIMIT = 8
+_DNS_WORKER_SLOTS = threading.BoundedSemaphore(_DNS_WORKER_LIMIT)
 
 # Keep the outbound-address policy independent of changes to ipaddress.is_global
 # between supported Python releases. These are the non-public IPv4 blocks from
@@ -126,6 +128,8 @@ def _embedded_ipv4_addresses(
     if address.teredo is not None:
         embedded.extend(address.teredo)
     if address in _IPV6_WELL_KNOWN_NAT64:
+        embedded.append(ipaddress.IPv4Address(address.packed[-4:]))
+    if address.packed[8:12] in {b"\x00\x00\x5e\xfe", b"\x02\x00\x5e\xfe"}:
         embedded.append(ipaddress.IPv4Address(address.packed[-4:]))
     return tuple(dict.fromkeys(embedded))
 
@@ -518,24 +522,41 @@ class SafeHTTPClient:
         effective_deadline = deadline if deadline is not None else time.monotonic() + self.timeout
         outcome: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
 
+        try:
+            slot_acquired = _DNS_WORKER_SLOTS.acquire(
+                timeout=_remaining_seconds(effective_deadline)
+            )
+        except socket.timeout as exc:
+            raise FetchError("DNS resolution exceeded the absolute fetch timeout") from exc
+        if not slot_acquired:
+            raise FetchError("DNS resolution exceeded the absolute fetch timeout")
+
         def resolve() -> None:
             try:
-                answers = self._resolver(
-                    hostname,
-                    port,
-                    family=socket.AF_UNSPEC,
-                    type=socket.SOCK_STREAM,
-                )
-            except Exception as exc:
-                outcome.put((False, exc))
-            else:
-                outcome.put((True, answers))
+                try:
+                    answers = self._resolver(
+                        hostname,
+                        port,
+                        family=socket.AF_UNSPEC,
+                        type=socket.SOCK_STREAM,
+                    )
+                except Exception as exc:
+                    outcome.put((False, exc))
+                else:
+                    outcome.put((True, answers))
+            finally:
+                _DNS_WORKER_SLOTS.release()
 
-        threading.Thread(
+        worker = threading.Thread(
             target=resolve,
             name=f"news-extractor-dns-{hostname}",
             daemon=True,
-        ).start()
+        )
+        try:
+            worker.start()
+        except RuntimeError as exc:
+            _DNS_WORKER_SLOTS.release()
+            raise FetchError("unable to start DNS resolution worker") from exc
         try:
             succeeded, result = outcome.get(timeout=_remaining_seconds(effective_deadline))
         except queue.Empty as exc:

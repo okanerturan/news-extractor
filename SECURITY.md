@@ -16,7 +16,8 @@ Do not include credentials, unpublished publisher content, or private network de
 
 - accepts only `http` and `https` URLs without embedded credentials;
 - rejects port zero and private, loopback, link-local, shared, documentation, benchmark, reserved, site-local, multicast, and unspecified destinations using explicit version-stable network tables;
-- recursively checks IPv4-mapped, 6to4, Teredo, and well-known NAT64 destinations instead of trusting only the outer IPv6 address;
+- recursively checks IPv4-mapped, 6to4, Teredo, well-known NAT64, and both ISATAP interface-ID forms instead of trusting only the outer IPv6 address;
+- limits synchronous DNS work to eight process-wide resolver threads shared across clients; capacity waits consume the same absolute deadline and saturation fails closed;
 - validates every redirect and blocks HTTPS-to-HTTP downgrades;
 - pins each vetted DNS answer to the socket while retaining TLS hostname verification;
 - accepts only HTML/XHTML, identity encoding, bounded bodies, and bounded redirects;

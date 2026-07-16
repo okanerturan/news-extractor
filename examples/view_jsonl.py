@@ -122,18 +122,19 @@ def _is_error_field(field: str) -> bool:
 
 
 def _safe_scalar(value: Any, field: str) -> str:
-    if _is_url_field(field):
-        return _safe_url_for_log(value)
     if _is_error_field(field):
         return _safe_error_for_log(value)
-    return _safe_terminal_text(value)
+    safe_url = _safe_url_for_log(value)
+    if _is_url_field(field) or safe_url != "<invalid-url>":
+        return safe_url
+    return _safe_error_for_log(value)
 
 
 def _safe_json_value(value: Any, field: str) -> Any:
     if isinstance(value, dict):
         sanitized = {}
         for key, item in value.items():
-            safe_key = _safe_terminal_text(key)
+            safe_key = _safe_error_for_log(key)
             child_field = f"{field}.{safe_key}" if field else safe_key
             sanitized[safe_key] = _safe_json_value(item, child_field)
         return sanitized
@@ -164,6 +165,11 @@ def wrap_value(value: str, width: int) -> str:
             continue
         lines.extend(textwrap.wrap(paragraph, width=width) or [""])
     return "\n".join(lines)
+
+
+def _safe_table_text(value: Any) -> str:
+    text = _safe_terminal_text(value, preserve_newlines=True)
+    return "\n".join(_safe_error_for_log(line) for line in text.split("\n"))
 
 
 def filter_rows(rows: List[Any], only_failed: bool, only_success: bool) -> List[Any]:
@@ -200,7 +206,7 @@ def print_separator(widths: List[int]) -> None:
 
 def print_row(row: List[str], widths: List[int]) -> None:
     safe_row = [
-        _safe_terminal_text(cell, preserve_newlines=True)
+        _safe_table_text(cell)
         for cell in row
     ]
     line_groups = [cell.splitlines() or [""] for cell in safe_row]
@@ -214,9 +220,9 @@ def print_row(row: List[str], widths: List[int]) -> None:
 
 
 def print_table(table: List[List[str]], headers: List[str]) -> None:
-    safe_headers = [_safe_terminal_text(header) for header in headers]
+    safe_headers = [_safe_error_for_log(header) for header in headers]
     safe_table = [
-        [_safe_terminal_text(cell, preserve_newlines=True) for cell in row]
+        [_safe_table_text(cell) for cell in row]
         for row in table
     ]
     widths = compute_widths(safe_table, safe_headers)

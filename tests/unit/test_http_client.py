@@ -9,6 +9,7 @@ from unittest import mock
 
 from news_extractor import FetchError, SafeHTTPClient, UnsafeUrlError
 from news_extractor.article_extractor import (
+    _DNS_WORKER_LIMIT,
     _PinnedHTTPConnection,
     _PinnedHTTPSConnection,
     _RawResponse,
@@ -110,6 +111,8 @@ class SafeHTTPClientTests(unittest.TestCase):
             "six-to-four.test": ["2002::"],
             "mapped-private.test": ["::ffff:127.0.0.1"],
             "nat64-private.test": ["64:ff9b::a00:1"],
+            "isatap-private.test": ["2606:4700:4700:0:0:5efe:0a00:0001"],
+            "isatap-u-bit-private.test": ["2606:4700:4700:0:200:5efe:0a00:0001"],
         }
         client = SafeHTTPClient(resolver=resolver_for(mapping))
 
@@ -123,6 +126,8 @@ class SafeHTTPClientTests(unittest.TestCase):
             "turn-anycast.test": ["192.0.0.10"],
             "public-v4.test": [PUBLIC_IP],
             "public-v6.test": ["2606:2800:220:1:248:1893:25c8:1946"],
+            "isatap-public.test": ["2606:4700:4700:0:0:5efe:5db8:d822"],
+            "isatap-u-bit-public.test": ["2606:4700:4700:0:200:5efe:5db8:d822"],
         }
         client = SafeHTTPClient(resolver=resolver_for(mapping))
         with mock.patch.object(client, "_request_once", return_value=html_response()) as request:
@@ -284,6 +289,82 @@ class SafeHTTPClientTests(unittest.TestCase):
         with self.assertRaisesRegex(FetchError, "DNS resolution exceeded the absolute fetch timeout"):
             client.fetch("https://slow-dns.test/article")
         self.assertLess(time.monotonic() - started, 0.4)
+
+    def test_dns_worker_capacity_is_process_wide_and_deadline_bounded(self) -> None:
+        release_resolvers = threading.Event()
+        all_workers_started = threading.Event()
+        active_lock = threading.Lock()
+        active_workers = 0
+        max_active_workers = 0
+
+        def blocked_resolver(host: str, port: int, **_: object):
+            nonlocal active_workers, max_active_workers
+            with active_lock:
+                active_workers += 1
+                max_active_workers = max(max_active_workers, active_workers)
+                if active_workers == _DNS_WORKER_LIMIT:
+                    all_workers_started.set()
+            try:
+                release_resolvers.wait(timeout=2)
+            finally:
+                with active_lock:
+                    active_workers -= 1
+            return resolver_for({})(host, port)
+
+        clients = [
+            SafeHTTPClient(timeout=1, resolver=blocked_resolver)
+            for _ in range(_DNS_WORKER_LIMIT)
+        ]
+        caller_errors: list[BaseException] = []
+
+        def fetch(client: SafeHTTPClient) -> None:
+            try:
+                client.fetch("https://capacity.test/article")
+            except BaseException as exc:
+                caller_errors.append(exc)
+
+        callers = [
+            threading.Thread(target=fetch, args=(client,), daemon=True)
+            for client in clients
+        ]
+        workers: list[threading.Thread] = []
+        with mock.patch.object(
+            SafeHTTPClient,
+            "_request_once",
+            return_value=html_response(),
+        ):
+            try:
+                for caller in callers:
+                    caller.start()
+                self.assertTrue(all_workers_started.wait(timeout=1))
+                workers = [
+                    thread
+                    for thread in threading.enumerate()
+                    if thread.name == "news-extractor-dns-capacity.test"
+                ]
+                self.assertEqual(len(workers), _DNS_WORKER_LIMIT)
+
+                saturated = SafeHTTPClient(timeout=0.1, resolver=blocked_resolver)
+                started = time.monotonic()
+                with self.assertRaisesRegex(
+                    FetchError,
+                    "DNS resolution exceeded the absolute fetch timeout",
+                ):
+                    saturated.fetch("https://capacity.test/saturated")
+                self.assertLess(time.monotonic() - started, 0.3)
+                with active_lock:
+                    self.assertEqual(active_workers, _DNS_WORKER_LIMIT)
+                    self.assertEqual(max_active_workers, _DNS_WORKER_LIMIT)
+            finally:
+                release_resolvers.set()
+                for caller in callers:
+                    caller.join(timeout=1)
+                for worker in workers:
+                    worker.join(timeout=1)
+
+        self.assertFalse(caller_errors)
+        self.assertTrue(all(not caller.is_alive() for caller in callers))
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
 
     def test_absolute_timeout_is_shared_across_redirect_resolution(self) -> None:
         def delayed_resolver(host: str, port: int, **_: object):

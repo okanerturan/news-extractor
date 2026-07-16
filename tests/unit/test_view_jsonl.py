@@ -34,6 +34,30 @@ class ViewJsonlOutputTests(unittest.TestCase):
                 "https://alice:super-secret@example.test/article"
                 "?token=top-secret#private"
             ),
+            "extraction": {
+                "image": (
+                    "https://alice:credential-secret@example.test/img"
+                    "?token=query-secret#fragment-secret"
+                )
+            },
+            "metadata": {
+                (
+                    "https://alice:key-secret@example.test/key"
+                    "?token=key-query#key-fragment"
+                ): "key value",
+                "references": [
+                    {
+                        "primary": (
+                            "https://bob:nested-secret@example.test/reference"
+                            "?key=nested-query#nested-fragment"
+                        )
+                    }
+                ]
+            },
+            "notes": (
+                "see https://alice:prose-secret@example.test/p"
+                "?token=prose-query#prose-fragment now"
+            ),
         }
 
         with tempfile.TemporaryDirectory() as directory:
@@ -50,6 +74,9 @@ class ViewJsonlOutputTests(unittest.TestCase):
                             "title",
                             "error",
                             "source_url",
+                            "extraction.image",
+                            "metadata",
+                            "notes",
                             "--wrap",
                             "0",
                         ]
@@ -61,6 +88,10 @@ class ViewJsonlOutputTests(unittest.TestCase):
         self.assertIn("Visible title", output)
         self.assertIn("https://example.test/failure", output)
         self.assertIn("https://example.test/article", output)
+        self.assertIn("https://example.test/img", output)
+        self.assertIn("https://example.test/reference", output)
+        self.assertIn('"https://example.test/key": "key value"', output)
+        self.assertIn("see https://example.test/p now", output)
         for forbidden in (
             "\x1b",
             "\x07",
@@ -70,8 +101,49 @@ class ViewJsonlOutputTests(unittest.TestCase):
             "super-secret",
             "top-secret",
             "#private",
+            "credential-secret",
+            "query-secret",
+            "fragment-secret",
+            "nested-secret",
+            "nested-query",
+            "nested-fragment",
+            "key-secret",
+            "key-query",
+            "key-fragment",
+            "prose-secret",
+            "prose-query",
+            "prose-fragment",
         ):
             self.assertNotIn(forbidden, output)
+
+    def test_wrap_keeps_intended_multiline_table_rows(self) -> None:
+        viewer = load_viewer()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "wrapped.jsonl"
+            path.write_text(
+                json.dumps({"title": "alpha beta gamma delta"}) + "\n",
+                encoding="utf-8",
+            )
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                self.assertEqual(
+                    viewer.main(
+                        [
+                            "--file",
+                            str(path),
+                            "--fields",
+                            "title",
+                            "--wrap",
+                            "10",
+                        ]
+                    ),
+                    0,
+                )
+
+        output = stdout.getvalue()
+        self.assertIn("| alpha beta |", output)
+        self.assertIn("| gamma      |", output)
+        self.assertIn("| delta      |", output)
 
 
 if __name__ == "__main__":
