@@ -9,6 +9,7 @@ Demonstrates:
 """
 
 from news_extractor import ArticleExtractor
+from news_extractor.article_extractor import _safe_terminal_text, _safe_url_for_log
 
 # Example Turkish news URLs
 urls = [
@@ -21,7 +22,8 @@ print("Turkish News Article Extractor - Batch Example")
 print("=" * 80)
 print()
 
-# Create extractor
+# Create the dependency-free extractor. Remote destinations are restricted to
+# public HTTP(S) addresses unless private-network access is explicitly enabled.
 extractor = ArticleExtractor()
 
 # Extract all articles
@@ -34,14 +36,18 @@ results = extractor.extract_batch(urls)
 for url, article in results.items():
     print("-" * 80)
     if article:
-        print(f"✅ {url}")
-        print(f"   Method: {article['method']}")
-        print(f"   Title: {article['title']}")
-        print(f"   Authors: {', '.join(article['authors']) if article['authors'] else 'N/A'}")
-        print(f"   Keywords: {', '.join(article['keywords'][:3]) if article['keywords'] else 'N/A'}...")
+        print(f"✅ {_safe_url_for_log(url)}")
+        print(f"   Method: {_safe_terminal_text(article['method'])}")
+        print(f"   Title: {_safe_terminal_text(article['title'])}")
+        authors = ", ".join(_safe_terminal_text(value) for value in article["authors"])
+        keywords = ", ".join(
+            _safe_terminal_text(value) for value in article["keywords"][:3]
+        )
+        print(f"   Authors: {authors or 'N/A'}")
+        print(f"   Keywords: {keywords or 'N/A'}...")
         print(f"   Text: {article['text_length']} chars")
     else:
-        print(f"❌ {url}")
+        print(f"❌ {_safe_url_for_log(url)}")
         print(f"   Failed to extract")
     print()
 

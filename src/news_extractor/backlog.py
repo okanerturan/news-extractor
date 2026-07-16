@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from news_extractor import ArticleExtractor
+from news_extractor.article_extractor import (
+    _safe_error_for_log,
+    _safe_terminal_text,
+    _safe_url_for_log,
+)
 
 
 @dataclass(frozen=True)
@@ -73,7 +78,7 @@ def reextract(
         try:
             article = extractor.extract(record.url)
         except Exception as exc:  # capture unexpected failures
-            error = f"{type(exc).__name__}: {exc}"
+            error = f"{type(exc).__name__}: extraction failed"
 
         payload["extraction"] = article
         payload["error"] = error
@@ -105,22 +110,33 @@ def write_jsonl(results: Iterable[Dict[str, Any]], destination: Path) -> None:
 def print_pretty(results: Iterable[Dict[str, Any]]) -> None:
     for entry in results:
         print("=" * 100)
-        print(f"[{entry['article_id']}] {entry['title']} ({entry['domain']})")
-        print(f"URL: {entry['source_url']}")
-        print(f"Canonical: {entry['canonical_url']}")
+        print(
+            f"[{_safe_terminal_text(entry['article_id'])}] "
+            f"{_safe_terminal_text(entry['title'])} "
+            f"({_safe_terminal_text(entry['domain'])})"
+        )
+        print(f"URL: {_safe_url_for_log(entry['source_url'])}")
+        print(f"Canonical: {_safe_url_for_log(entry['canonical_url'])}")
         extraction = entry.get("extraction")
 
         if extraction:
-            print(f"Method: {extraction['method']}")
-            print(f"Text length: {extraction['text_length']}")
-            keywords = ", ".join(extraction.get("keywords") or []) or "N/A"
+            print(f"Method: {_safe_terminal_text(extraction['method'])}")
+            print(f"Text length: {_safe_terminal_text(extraction['text_length'])}")
+            keywords = ", ".join(
+                _safe_terminal_text(keyword)
+                for keyword in (extraction.get("keywords") or [])
+            ) or "N/A"
             print(f"Keywords: {keywords}")
-            preview = (extraction.get("text") or "")[:280]
+            raw_preview = (extraction.get("text") or "")[:280]
+            preview = _safe_terminal_text(
+                raw_preview,
+                preserve_newlines=True,
+            )
             print("-" * 100)
-            print(preview + ("..." if len(preview) == 280 else ""))
+            print(preview + ("..." if len(raw_preview) == 280 else ""))
         else:
             print("Extraction: ❌")
             error = entry.get("error")
             if error:
-                print(f"Error: {error}")
+                print(f"Error: {_safe_error_for_log(error)}")
         print()
