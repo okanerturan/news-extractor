@@ -14,6 +14,7 @@ import time
 from typing import Iterable
 
 from news_extractor import ArticleExtractor
+from news_extractor.article_extractor import _safe_terminal_text, _safe_url_for_log
 
 
 LEGACY_CORPUS = [
@@ -60,7 +61,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         rows.append(
             {
                 "name": name,
-                "url": url,
+                "url": _safe_url_for_log(url),
                 "success": article is not None,
                 "needs_manual_review": any(marker in combined for marker in ERROR_MARKERS),
                 "method": (article or {}).get("method"),
@@ -79,12 +80,13 @@ def main(argv: Iterable[str] | None = None) -> int:
             status = "OK" if row["success"] else "FAIL"
             review = " REVIEW" if row["needs_manual_review"] else ""
             print(
-                f"[{status}{review}] {row['name']}: {row['method'] or '-'} / "
+                f"[{status}{review}] {_safe_terminal_text(row['name'])}: "
+                f"{_safe_terminal_text(row['method'] or '-')} / "
                 f"{row['text_length']} chars / {row['elapsed_seconds']}s"
             )
-            print(f"  {row['url']}")
+            print(f"  {_safe_url_for_log(row['url'])}")
             if row["title"]:
-                print(f"  {row['title']}")
+                print(f"  {_safe_terminal_text(row['title'])}")
 
         successful = sum(bool(row["success"]) for row in rows)
         print(f"\nObserved successes: {successful}/{len(rows)}")

@@ -9,13 +9,16 @@ the socket to avoid a second DNS lookup at connection time.
 from __future__ import annotations
 
 import http.client
+import io
 import ipaddress
 import json
 import logging
 import math
+import queue
 import re
 import socket
 import ssl
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -23,7 +26,7 @@ from email.message import Message
 from html import unescape
 from html.parser import HTMLParser
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
-from urllib.parse import quote, urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +56,161 @@ _IGNORED_TAGS = {
 }
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 _WHITESPACE = re.compile(r"\s+")
+_ANSI_OSC = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
+_ANSI_CSI = re.compile(r"(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]")
+_ANSI_TWO_BYTE = re.compile(r"\x1b[@-_]")
+_URL_IN_TEXT = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
+
+# Keep the outbound-address policy independent of changes to ipaddress.is_global
+# between supported Python releases. These are the non-public IPv4 blocks from
+# the IANA special-purpose registries, with the two globally reachable anycast
+# exceptions inside 192.0.0.0/24 handled explicitly below.
+_IPV4_PUBLIC_EXCEPTIONS = frozenset(
+    {
+        ipaddress.IPv4Address("192.0.0.9"),
+        ipaddress.IPv4Address("192.0.0.10"),
+    }
+)
+_IPV4_DENY_NETWORKS = tuple(
+    ipaddress.IPv4Network(value)
+    for value in (
+        "0.0.0.0/8",
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.0.0.0/24",
+        "192.0.2.0/24",
+        "192.88.99.0/24",
+        "192.168.0.0/16",
+        "198.18.0.0/15",
+        "198.51.100.0/24",
+        "203.0.113.0/24",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+    )
+)
+_IPV6_GLOBAL_UNICAST = ipaddress.IPv6Network("2000::/3")
+_IPV6_WELL_KNOWN_NAT64 = ipaddress.IPv6Network("64:ff9b::/96")
+_IPV6_DENY_NETWORKS = tuple(
+    ipaddress.IPv6Network(value)
+    for value in (
+        "::/128",
+        "::1/128",
+        "64:ff9b:1::/48",
+        "100::/64",
+        "2001::/23",
+        "2001:db8::/32",
+        "2002::/16",
+        "3ffe::/16",
+        "3fff::/20",
+        "fc00::/7",
+        "fe80::/10",
+        "fec0::/10",
+        "ff00::/8",
+    )
+)
+
+
+def _embedded_ipv4_addresses(
+    address: ipaddress.IPv6Address,
+) -> tuple[ipaddress.IPv4Address, ...]:
+    """Return IPv4 destinations encoded by recognized transition formats."""
+
+    embedded: list[ipaddress.IPv4Address] = []
+    if address.ipv4_mapped is not None:
+        embedded.append(address.ipv4_mapped)
+    if address.sixtofour is not None:
+        embedded.append(address.sixtofour)
+    if address.teredo is not None:
+        embedded.extend(address.teredo)
+    if address in _IPV6_WELL_KNOWN_NAT64:
+        embedded.append(ipaddress.IPv4Address(address.packed[-4:]))
+    return tuple(dict.fromkeys(embedded))
+
+
+def _is_allowed_public_address(
+    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> bool:
+    """Apply the repository's explicit, stable public-destination policy."""
+
+    if isinstance(address, ipaddress.IPv4Address):
+        if address in _IPV4_PUBLIC_EXCEPTIONS:
+            return True
+        return not any(address in network for network in _IPV4_DENY_NETWORKS)
+
+    embedded = _embedded_ipv4_addresses(address)
+    if any(not _is_allowed_public_address(candidate) for candidate in embedded):
+        return False
+    if address.ipv4_mapped is not None or address in _IPV6_WELL_KNOWN_NAT64:
+        return bool(embedded)
+    if any(address in network for network in _IPV6_DENY_NETWORKS):
+        return False
+    return address in _IPV6_GLOBAL_UNICAST
+
+
+def _remaining_seconds(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise socket.timeout("absolute fetch deadline exceeded")
+    return remaining
+
+
+def _safe_terminal_text(
+    value: object,
+    *,
+    preserve_newlines: bool = False,
+    preserve_tabs: bool = False,
+) -> str:
+    """Return text that cannot inject terminal control sequences."""
+
+    try:
+        text = str(value)
+    except Exception:
+        return "<unprintable>"
+    text = _ANSI_OSC.sub("", text)
+    text = _ANSI_CSI.sub("", text)
+    text = _ANSI_TWO_BYTE.sub("", text)
+    cleaned: list[str] = []
+    for character in text:
+        codepoint = ord(character)
+        if character == "\n" and preserve_newlines:
+            cleaned.append(character)
+        elif character == "\t" and preserve_tabs:
+            cleaned.append(character)
+        elif codepoint < 32 or 127 <= codepoint <= 159:
+            continue
+        else:
+            cleaned.append(character)
+    return "".join(cleaned)
+
+
+def _safe_url_for_log(value: object) -> str:
+    """Redact credentials, query, and fragment from an untrusted URL safely."""
+
+    try:
+        raw = _safe_terminal_text(value)
+        parsed = urlsplit(raw)
+        hostname = parsed.hostname
+        port = parsed.port
+    except Exception:
+        return "<invalid-url>"
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"} or not hostname:
+        return "<invalid-url>"
+    display_host = f"[{hostname}]" if ":" in hostname else hostname
+    default_port = 443 if scheme == "https" else 80
+    netloc = display_host if port in {None, default_port} else f"{display_host}:{port}"
+    path = _safe_terminal_text(parsed.path or "/")
+    return urlunsplit((scheme, netloc, path, "", ""))
+
+
+def _safe_error_for_log(value: object) -> str:
+    """Remove terminal controls and redact any URL-shaped error fragments."""
+
+    text = _safe_terminal_text(value)
+    return _URL_IN_TEXT.sub(lambda match: _safe_url_for_log(match.group(0)), text)
 
 
 class FetchError(RuntimeError):
@@ -90,17 +248,116 @@ class DownloadedDocument:
     content_type: str
 
 
+class _DeadlineRawReader(io.RawIOBase):
+    """Socket reader that reapplies the shrinking wall-clock budget per recv."""
+
+    def __init__(self, wrapped_socket: _DeadlineSocket, deadline: float) -> None:
+        super().__init__()
+        self._socket = wrapped_socket
+        self._deadline = deadline
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, buffer: Any) -> int:
+        if self.closed:
+            raise ValueError("read of closed deadline socket")
+        return self._socket._recv_into(buffer, self._deadline)
+
+    def fileno(self) -> int:
+        return self._socket.fileno()
+
+    def close(self) -> None:
+        if not self.closed:
+            self._socket._release_file()
+        super().close()
+
+
+class _DeadlineSocket:
+    """Minimal socket proxy used by http.client under one absolute deadline."""
+
+    def __init__(self, wrapped_socket: socket.socket, deadline: float) -> None:
+        self._socket = wrapped_socket
+        self._deadline = deadline
+        self._file_references = 0
+        self._close_requested = False
+        self._reference_lock = threading.Lock()
+
+    def sendall(self, data: bytes, flags: int = 0) -> None:
+        self._socket.settimeout(_remaining_seconds(self._deadline))
+        self._socket.sendall(data, flags)
+
+    def makefile(
+        self,
+        mode: str = "r",
+        buffering: int | None = None,
+        **_: Any,
+    ) -> io.BufferedReader | _DeadlineRawReader:
+        if mode not in {"r", "rb"}:
+            raise ValueError("deadline socket only supports binary reads")
+        with self._reference_lock:
+            if self._close_requested:
+                raise OSError("deadline socket is closed")
+            self._file_references += 1
+        raw = _DeadlineRawReader(self, self._deadline)
+        if buffering == 0:
+            return raw
+        size = io.DEFAULT_BUFFER_SIZE if buffering in {None, -1} else buffering
+        try:
+            return io.BufferedReader(raw, size)
+        except BaseException:
+            raw.close()
+            raise
+
+    def settimeout(self, value: float | None) -> None:
+        remaining = _remaining_seconds(self._deadline)
+        self._socket.settimeout(remaining if value is None else min(value, remaining))
+
+    def gettimeout(self) -> float | None:
+        return self._socket.gettimeout()
+
+    def close(self) -> None:
+        with self._reference_lock:
+            self._close_requested = True
+            should_close = self._file_references == 0
+        if should_close:
+            self._socket.close()
+
+    def _recv_into(self, buffer: Any, deadline: float) -> int:
+        self._socket.settimeout(_remaining_seconds(deadline))
+        return self._socket.recv_into(buffer)
+
+    def _release_file(self) -> None:
+        with self._reference_lock:
+            self._file_references -= 1
+            should_close = self._close_requested and self._file_references == 0
+        if should_close:
+            self._socket.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._socket, name)
+
+
 class _PinnedHTTPConnection(http.client.HTTPConnection):
-    def __init__(self, host: str, connect_ip: str, port: int, timeout: float) -> None:
+    def __init__(
+        self,
+        host: str,
+        connect_ip: str,
+        port: int,
+        timeout: float,
+        deadline: float | None = None,
+    ) -> None:
         super().__init__(host, port=port, timeout=timeout)
         self._connect_ip = connect_ip
+        self._deadline = deadline if deadline is not None else time.monotonic() + timeout
 
     def connect(self) -> None:
-        self.sock = socket.create_connection(
+        wrapped_socket = socket.create_connection(
             (self._connect_ip, self.port),
-            self.timeout,
+            _remaining_seconds(self._deadline),
             self.source_address,
         )
+        self.sock = _DeadlineSocket(wrapped_socket, self._deadline)
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
@@ -111,18 +368,22 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         port: int,
         timeout: float,
         context: ssl.SSLContext,
+        deadline: float | None = None,
     ) -> None:
         super().__init__(host, port=port, timeout=timeout, context=context)
         self._connect_ip = connect_ip
+        self._deadline = deadline if deadline is not None else time.monotonic() + timeout
 
     def connect(self) -> None:
         raw_socket = socket.create_connection(
             (self._connect_ip, self.port),
-            self.timeout,
+            _remaining_seconds(self._deadline),
             self.source_address,
         )
         try:
-            self.sock = self._context.wrap_socket(raw_socket, server_hostname=self.host)
+            raw_socket.settimeout(_remaining_seconds(self._deadline))
+            wrapped_socket = self._context.wrap_socket(raw_socket, server_hostname=self.host)
+            self.sock = _DeadlineSocket(wrapped_socket, self._deadline)
         except BaseException:
             raw_socket.close()
             raise
@@ -159,13 +420,14 @@ class SafeHTTPClient:
     def fetch(self, url: str) -> DownloadedDocument:
         current_url = url
         previous_scheme: str | None = None
+        deadline = time.monotonic() + self.timeout
 
         for redirect_count in range(self.max_redirects + 1):
-            target = self._validate_target(current_url)
+            target = self._validate_target(current_url, deadline=deadline)
             if previous_scheme == "https" and target.scheme != "https":
                 raise UnsafeUrlError("HTTPS redirects may not downgrade to HTTP")
 
-            response = self._request_once(target)
+            response = self._request_once(target, deadline=deadline)
             if response.status in _REDIRECT_STATUSES:
                 if redirect_count >= self.max_redirects:
                     raise FetchError("redirect limit exceeded")
@@ -199,7 +461,7 @@ class SafeHTTPClient:
 
         raise FetchError("redirect limit exceeded")
 
-    def _validate_target(self, url: str) -> _Target:
+    def _validate_target(self, url: str, *, deadline: float | None = None) -> _Target:
         if not isinstance(url, str) or not url.strip():
             raise UnsafeUrlError("URL must be a non-empty string")
         if any(ord(character) < 32 or ord(character) == 127 for character in url):
@@ -207,7 +469,7 @@ class SafeHTTPClient:
 
         try:
             parsed = urlsplit(url)
-            port = parsed.port
+            explicit_port = parsed.port
         except ValueError as exc:
             raise UnsafeUrlError("URL has an invalid port or host") from exc
 
@@ -226,8 +488,10 @@ class SafeHTTPClient:
         if not hostname:
             raise UnsafeUrlError("URL must include a hostname")
 
-        port = port or (443 if scheme == "https" else 80)
-        addresses = self._resolve_addresses(hostname, port)
+        if explicit_port == 0:
+            raise UnsafeUrlError("URL port must be between 1 and 65535")
+        port = explicit_port if explicit_port is not None else (443 if scheme == "https" else 80)
+        addresses = self._resolve_addresses(hostname, port, deadline=deadline)
         path = quote(parsed.path or "/", safe="/%:@!$&'()*+,;=-._~")
         query = quote(parsed.query, safe="/%?:@!$&'()*+,;=-._~")
         request_target = f"{path}?{query}" if query else path
@@ -244,28 +508,66 @@ class SafeHTTPClient:
             addresses=addresses,
         )
 
-    def _resolve_addresses(self, hostname: str, port: int) -> tuple[str, ...]:
+    def _resolve_addresses(
+        self,
+        hostname: str,
+        port: int,
+        *,
+        deadline: float | None = None,
+    ) -> tuple[str, ...]:
+        effective_deadline = deadline if deadline is not None else time.monotonic() + self.timeout
+        outcome: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+
+        def resolve() -> None:
+            try:
+                answers = self._resolver(
+                    hostname,
+                    port,
+                    family=socket.AF_UNSPEC,
+                    type=socket.SOCK_STREAM,
+                )
+            except Exception as exc:
+                outcome.put((False, exc))
+            else:
+                outcome.put((True, answers))
+
+        threading.Thread(
+            target=resolve,
+            name=f"news-extractor-dns-{hostname}",
+            daemon=True,
+        ).start()
         try:
-            answers = self._resolver(
-                hostname,
-                port,
-                family=socket.AF_UNSPEC,
-                type=socket.SOCK_STREAM,
-            )
-        except (OSError, socket.gaierror) as exc:
-            raise FetchError(f"unable to resolve hostname: {hostname}") from exc
+            succeeded, result = outcome.get(timeout=_remaining_seconds(effective_deadline))
+        except queue.Empty as exc:
+            raise FetchError("DNS resolution exceeded the absolute fetch timeout") from exc
+        except socket.timeout as exc:
+            raise FetchError("DNS resolution exceeded the absolute fetch timeout") from exc
+
+        if not succeeded:
+            error = result
+            if isinstance(error, (OSError, socket.gaierror)):
+                raise FetchError(f"unable to resolve hostname: {hostname}") from error
+            raise FetchError(f"hostname resolver failed: {hostname}") from error  # type: ignore[arg-type]
+
+        answers = result
+        if not isinstance(answers, Sequence):
+            raise FetchError(f"hostname resolver returned an invalid result: {hostname}")
 
         addresses: list[str] = []
         for answer in answers:
+            try:
+                _remaining_seconds(effective_deadline)
+            except socket.timeout as exc:
+                raise FetchError("DNS resolution exceeded the absolute fetch timeout") from exc
             raw_address = str(answer[4][0]).split("%", 1)[0]
             try:
                 address = ipaddress.ip_address(raw_address)
             except ValueError as exc:
                 raise UnsafeUrlError("DNS returned an invalid IP address") from exc
 
-            if not self.allow_private_networks and not address.is_global:
+            if not self.allow_private_networks and not _is_allowed_public_address(address):
                 raise UnsafeUrlError(
-                    f"hostname resolves to a non-public address: {address.compressed}"
+                    f"hostname resolves to an address denied by the public-destination policy: {address.compressed}"
                 )
             if address.is_multicast or address.is_unspecified:
                 raise UnsafeUrlError(f"hostname resolves to an unusable address: {address}")
@@ -277,34 +579,39 @@ class SafeHTTPClient:
             raise FetchError(f"hostname did not resolve to an address: {hostname}")
         return tuple(addresses)
 
-    def _request_once(self, target: _Target) -> _RawResponse:
+    def _request_once(self, target: _Target, *, deadline: float) -> _RawResponse:
         last_error: BaseException | None = None
         for connect_ip in target.addresses:
             try:
-                return self._perform_request(target, connect_ip)
+                return self._perform_request(target, connect_ip, deadline=deadline)
             except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
                 last_error = exc
 
         raise FetchError(f"request failed for {target.hostname}: {last_error}") from last_error
 
-    def _perform_request(self, target: _Target, connect_ip: str) -> _RawResponse:
+    def _perform_request(self, target: _Target, connect_ip: str, *, deadline: float) -> _RawResponse:
+        try:
+            remaining = _remaining_seconds(deadline)
+        except socket.timeout as exc:
+            raise FetchError("request exceeded the absolute fetch timeout") from exc
         if target.scheme == "https":
             connection: http.client.HTTPConnection = _PinnedHTTPSConnection(
                 target.hostname,
                 connect_ip,
                 target.port,
-                self.timeout,
+                remaining,
                 self._ssl_context,
+                deadline,
             )
         else:
             connection = _PinnedHTTPConnection(
                 target.hostname,
                 connect_ip,
                 target.port,
-                self.timeout,
+                remaining,
+                deadline,
             )
 
-        deadline = time.monotonic() + self.timeout
         try:
             connection.request(
                 "GET",
@@ -340,7 +647,7 @@ class SafeHTTPClient:
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise FetchError("response exceeded configured timeout")
+                    raise FetchError("response exceeded the absolute fetch timeout")
                 if connection.sock is not None:
                     connection.sock.settimeout(remaining)
                 chunk = response.read(min(64 * 1024, self.max_response_bytes + 1 - len(body)))
@@ -352,7 +659,7 @@ class SafeHTTPClient:
 
             return _RawResponse(response.status, response.reason, headers, bytes(body))
         except socket.timeout as exc:
-            raise FetchError("request exceeded configured timeout") from exc
+            raise FetchError("request exceeded the absolute fetch timeout") from exc
         finally:
             connection.close()
 
@@ -623,7 +930,11 @@ class ArticleExtractor:
                 final_url=document.final_url,
             )
         except (FetchError, OSError, ValueError) as exc:
-            logger.warning("Article extraction failed for url=%s: %s", url, exc)
+            logger.warning(
+                "Article extraction failed for url=%s: %s",
+                _safe_url_for_log(url),
+                _safe_error_for_log(exc),
+            )
             return None
 
     def extract_html(
@@ -642,7 +953,11 @@ class ArticleExtractor:
             parser.feed(html)
             parser.close()
         except (ValueError, AssertionError, RecursionError) as exc:
-            logger.debug("HTML parser rejected url=%s: %s", url, exc)
+            logger.debug(
+                "HTML parser rejected url=%s: %s",
+                _safe_url_for_log(url),
+                _safe_error_for_log(exc),
+            )
             return None
 
         structured = self._best_json_ld(parser.json_ld)
@@ -662,7 +977,11 @@ class ArticleExtractor:
                     text = semantic_text
 
         if len(text) < self.min_text_length:
-            logger.debug("Extracted text too short for url=%s (len=%s)", url, len(text))
+            logger.debug(
+                "Extracted text too short for url=%s (len=%s)",
+                _safe_url_for_log(url),
+                len(text),
+            )
             return None
 
         metadata = structured or {}

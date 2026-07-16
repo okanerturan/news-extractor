@@ -6,7 +6,7 @@ import logging
 import sys
 from typing import Any, Dict, Iterable
 
-from .article_extractor import ArticleExtractor
+from .article_extractor import ArticleExtractor, _safe_terminal_text, _safe_url_for_log
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,10 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
         "--timeout",
         type=float,
         default=10,
-        help="Per-request timeout in seconds (default: 10).",
+        help=(
+            "Absolute wall-clock budget in seconds for DNS, redirects, connection, "
+            "request, headers, and response body (default: 10)."
+        ),
     )
     parser.add_argument(
         "--max-bytes",
@@ -65,17 +68,27 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
 
 def _print_pretty(url: str, article: Dict[str, Any]) -> None:
     print("=" * 80)
-    print(f"URL: {url}")
-    print(f"Method: {article['method']}")
-    print(f"Title: {article['title']}")
-    authors = ", ".join(article["authors"]) if article.get("authors") else "N/A"
+    print(f"URL: {_safe_url_for_log(url)}")
+    print(f"Method: {_safe_terminal_text(article['method'])}")
+    print(f"Title: {_safe_terminal_text(article['title'])}")
+    authors = (
+        ", ".join(_safe_terminal_text(author) for author in article["authors"])
+        if article.get("authors")
+        else "N/A"
+    )
     print(f"Authors: {authors}")
-    print(f"Date: {article.get('date')}")
-    keywords = ", ".join(article.get("keywords", [])[:5]) or "N/A"
+    print(f"Date: {_safe_terminal_text(article.get('date'))}")
+    keywords = ", ".join(
+        _safe_terminal_text(keyword) for keyword in article.get("keywords", [])[:5]
+    ) or "N/A"
     print(f"Keywords: {keywords}")
     print(f"Text length: {article['text_length']} chars")
     print("-" * 80)
-    preview = (article.get("text") or "")[:300]
+    preview = _safe_terminal_text(
+        (article.get("text") or "")[:300],
+        preserve_newlines=True,
+        preserve_tabs=True,
+    )
     print(preview + ("..." if preview else ""))
     print()
 
@@ -95,7 +108,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             allow_private_networks=args.allow_private_network,
         )
     except ValueError as exc:
-        logger.error("Invalid configuration: %s", exc)
+        logger.error("Invalid configuration: %s", _safe_terminal_text(exc))
         return 2
 
     successes = 0
@@ -104,12 +117,17 @@ def main(argv: Iterable[str] | None = None) -> int:
         if article:
             successes += 1
             if args.format == "json":
-                print(json.dumps(article, ensure_ascii=False, indent=2))
+                display_article = dict(article)
+                for key in ("url", "final_url", "image"):
+                    if display_article.get(key):
+                        display_article[key] = _safe_url_for_log(display_article[key])
+                print(json.dumps(display_article, ensure_ascii=False, indent=2))
             else:
                 _print_pretty(url, article)
         else:
-            logger.error("Extraction failed for url=%s", url)
-            print(f"❌ Failed to extract: {url}", file=sys.stderr)
+            safe_url = _safe_url_for_log(url)
+            logger.error("Extraction failed for url=%s", safe_url)
+            print(f"❌ Failed to extract: {safe_url}", file=sys.stderr)
 
     all_success = successes == len(args.urls)
     return 0 if all_success else 1

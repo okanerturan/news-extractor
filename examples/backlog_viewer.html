@@ -173,13 +173,51 @@
     const errorMessage = document.getElementById("errorMessage");
     let rows = [];
 
-    const escapeHtml = (str) =>
-      str
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#39;");
+    const scalarText = (value, fallback = "") => {
+      if (value === null || value === undefined) return fallback;
+      if (["string", "number", "boolean", "bigint"].includes(typeof value)) {
+        return String(value);
+      }
+      return fallback;
+    };
+
+    const safeHttpUrl = (value) => {
+      try {
+        const url = new URL(scalarText(value));
+        if (!["http:", "https:"].includes(url.protocol)) return null;
+        return url.href;
+      } catch {
+        return null;
+      }
+    };
+
+    function appendLabeledValue(container, label, value) {
+      const row = document.createElement("div");
+      const strong = document.createElement("strong");
+      strong.textContent = `${label}:`;
+      row.append(strong, document.createTextNode(` ${scalarText(value, "—")}`));
+      container.append(row);
+    }
+
+    function appendSafeLink(container, label, rawUrl, linkText) {
+      const row = document.createElement("div");
+      const strong = document.createElement("strong");
+      strong.textContent = `${label}:`;
+      row.append(strong, document.createTextNode(" "));
+      const href = safeHttpUrl(rawUrl);
+      if (href) {
+        const anchor = document.createElement("a");
+        anchor.href = href;
+        anchor.target = "_blank";
+        anchor.rel = "noopener noreferrer";
+        anchor.textContent = scalarText(linkText, href);
+        row.append(anchor);
+      } else {
+        const value = scalarText(rawUrl, "n/a");
+        row.append(document.createTextNode(value === "n/a" ? value : "invalid or unsafe URL"));
+      }
+      container.append(row);
+    }
 
     async function loadJsonl() {
       try {
@@ -216,9 +254,16 @@
             .filter((method) => !!method && typeof method === "string")
         )
       ).sort();
-      methodFilter.innerHTML =
-        `<option value="all">All</option>` +
-        methods.map((method) => `<option value="${method}">${method}</option>`).join("");
+      const allOption = document.createElement("option");
+      allOption.value = "all";
+      allOption.textContent = "All";
+      const methodOptions = methods.map((method) => {
+        const option = document.createElement("option");
+        option.value = method;
+        option.textContent = method;
+        return option;
+      });
+      methodFilter.replaceChildren(allOption, ...methodOptions);
     }
 
     function filterRows(data) {
@@ -258,66 +303,84 @@
       const badgeText = succeeded ? "Success" : "Failed";
       const textLength = extraction?.text_length ?? "—";
       const method = extraction?.method ?? "n/a";
-      const keywordDisplay = extraction?.keywords?.length
-        ? extraction.keywords.join(", ")
+      const keywordDisplay = Array.isArray(extraction?.keywords) && extraction.keywords.length
+        ? extraction.keywords.map((value) => scalarText(value)).join(", ")
         : "—";
-      const summaryText = extraction?.text ?? "";
+      const summaryText = scalarText(extraction?.text);
 
-      return `
-        <article class="card ${badgeClass}">
-          <header>
-            <div>
-              <strong>#${row.article_id ?? "?"}</strong>
-              <div>${escapeHtml(row.title ?? "Untitled")}</div>
-              <small>${escapeHtml(row.domain ?? "??")} &middot; ${
-        row.date ?? "n/a"
-      }</small>
-            </div>
-            <span class="badge ${badgeClass}">${badgeText}</span>
-          </header>
-          <div class="meta">
-            <div><strong>Method:</strong> ${escapeHtml(method)}</div>
-            <div><strong>Text length:</strong> ${textLength}</div>
-            <div><strong>URL:</strong> <a href="${escapeHtml(
-              row.source_url ?? "#"
-            )}" target="_blank" rel="noopener">${escapeHtml(
-        row.domain ?? "link"
-      )}</a></div>
-          </div>
-          ${
-            error
-              ? `<p><strong>Error:</strong> ${escapeHtml(String(error))}</p>`
-              : ""
-          }
-          <details>
-            <summary>Keywords & metadata</summary>
-            <p><strong>Keywords:</strong> ${escapeHtml(keywordDisplay)}</p>
-            <p><strong>Canonical:</strong> <a href="${escapeHtml(
-              row.canonical_url ?? "#"
-            )}" target="_blank" rel="noopener">${escapeHtml(
-        row.canonical_url ?? "n/a"
-      )}</a></p>
-          </details>
-          ${
-            summaryText
-              ? `<details open>
-                  <summary>Extraction text</summary>
-                  <pre>${escapeHtml(summaryText)}</pre>
-                </details>`
-              : ""
-          }
-        </article>
-      `;
+      const card = document.createElement("article");
+      card.classList.add("card", badgeClass);
+
+      const header = document.createElement("header");
+      const heading = document.createElement("div");
+      const identifier = document.createElement("strong");
+      identifier.textContent = `#${scalarText(row.article_id, "?")}`;
+      const title = document.createElement("div");
+      title.textContent = scalarText(row.title, "Untitled");
+      const subtitle = document.createElement("small");
+      subtitle.textContent = `${scalarText(row.domain, "??")} · ${scalarText(row.date, "n/a")}`;
+      heading.append(identifier, title, subtitle);
+      const badge = document.createElement("span");
+      badge.classList.add("badge", badgeClass);
+      badge.textContent = badgeText;
+      header.append(heading, badge);
+      card.append(header);
+
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      appendLabeledValue(meta, "Method", method);
+      appendLabeledValue(meta, "Text length", textLength);
+      appendSafeLink(meta, "URL", row.source_url, row.domain ?? "link");
+      card.append(meta);
+
+      if (error) {
+        const errorParagraph = document.createElement("p");
+        const label = document.createElement("strong");
+        label.textContent = "Error:";
+        errorParagraph.append(label, document.createTextNode(` ${scalarText(error)}`));
+        card.append(errorParagraph);
+      }
+
+      const metadata = document.createElement("details");
+      const metadataSummary = document.createElement("summary");
+      metadataSummary.textContent = "Keywords & metadata";
+      metadata.append(metadataSummary);
+      const keywords = document.createElement("p");
+      const keywordLabel = document.createElement("strong");
+      keywordLabel.textContent = "Keywords:";
+      keywords.append(keywordLabel, document.createTextNode(` ${keywordDisplay}`));
+      metadata.append(keywords);
+      appendSafeLink(metadata, "Canonical", row.canonical_url, row.canonical_url ?? "n/a");
+      card.append(metadata);
+
+      if (summaryText) {
+        const body = document.createElement("details");
+        body.open = true;
+        const bodySummary = document.createElement("summary");
+        bodySummary.textContent = "Extraction text";
+        const pre = document.createElement("pre");
+        pre.textContent = summaryText;
+        body.append(bodySummary, pre);
+        card.append(body);
+      }
+
+      return card;
     }
 
     function render() {
       if (!rows.length) {
-        cardsRoot.innerHTML = "";
+        cardsRoot.replaceChildren();
         statusLine.textContent = "";
         return;
       }
       const filtered = filterRows(rows);
-      cardsRoot.innerHTML = filtered.map(renderCard).join("") || "<p>No matches.</p>";
+      if (filtered.length) {
+        cardsRoot.replaceChildren(...filtered.map(renderCard));
+      } else {
+        const empty = document.createElement("p");
+        empty.textContent = "No matches.";
+        cardsRoot.replaceChildren(empty);
+      }
 
       const successCount = filtered.filter(
         (row) => row.extraction && !row.error

@@ -118,7 +118,7 @@ Live results do not run in CI and must not replace the deterministic security/pa
 
 ## Archive map
 
-The complete legacy material is frozen under `archive/legacy_research/`:
+Selected legacy material is frozen under `archive/legacy_research/`:
 
 - `analysis/` — comparison narratives and recorded outputs;
 - `docs/` — pre-maintenance notes and source inventories;

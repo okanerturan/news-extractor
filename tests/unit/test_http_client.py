@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import socket
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -9,6 +12,7 @@ from news_extractor.article_extractor import (
     _PinnedHTTPConnection,
     _PinnedHTTPSConnection,
     _RawResponse,
+    _safe_url_for_log,
 )
 
 
@@ -29,7 +33,57 @@ def html_response(body: bytes = b"<html><article><p>safe</p></article></html>") 
     return _RawResponse(200, "OK", {"content-type": "text/html; charset=utf-8"}, body)
 
 
+@contextmanager
+def scripted_http_peer(chunks: list[tuple[float, bytes]]):
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    listener.settimeout(1)
+    port = listener.getsockname()[1]
+
+    def serve() -> None:
+        try:
+            connection, _ = listener.accept()
+        except OSError:
+            return
+        with connection:
+            connection.settimeout(1)
+            request = bytearray()
+            try:
+                while b"\r\n\r\n" not in request and len(request) < 64 * 1024:
+                    data = connection.recv(4096)
+                    if not data:
+                        return
+                    request.extend(data)
+                for delay, payload in chunks:
+                    if delay:
+                        time.sleep(delay)
+                    connection.sendall(payload)
+            except OSError:
+                return
+
+    thread = threading.Thread(target=serve, name="scripted-http-peer", daemon=True)
+    thread.start()
+    try:
+        yield port
+    finally:
+        listener.close()
+        thread.join(timeout=1)
+
+
 class SafeHTTPClientTests(unittest.TestCase):
+    def test_safe_url_for_log_is_total_and_removes_sensitive_components(self) -> None:
+        raw = "https://alice:super-secret@example.test/path?token=top-secret#private"
+        self.assertEqual(_safe_url_for_log(raw), "https://example.test/path")
+        self.assertEqual(_safe_url_for_log("\x1b[31mnot a URL\x1b[0m"), "<invalid-url>")
+
+        class BrokenString:
+            def __str__(self) -> str:
+                raise RuntimeError("do not stringify")
+
+        self.assertEqual(_safe_url_for_log(BrokenString()), "<invalid-url>")
+
     def test_rejects_invalid_schemes_credentials_controls_and_hosts(self) -> None:
         client = SafeHTTPClient(resolver=resolver_for({}))
         for url in (
@@ -38,6 +92,7 @@ class SafeHTTPClientTests(unittest.TestCase):
             "https://user:secret@example.test/article",
             "https://example.test/line\nbreak",
             "https:///missing-host",
+            "https://example.test:0/article",
         ):
             with self.subTest(url=url), self.assertRaises(UnsafeUrlError):
                 client.fetch(url)
@@ -48,12 +103,35 @@ class SafeHTTPClientTests(unittest.TestCase):
             "private.test": ["10.20.30.40"],
             "linklocal.test": ["169.254.169.254"],
             "mixed.test": [PUBLIC_IP, "192.168.1.20"],
+            "special-v4.test": ["192.0.0.8"],
+            "site-local-v6.test": ["fec0::1"],
+            "reserved-v6.test": ["400::1"],
+            "local-nat64.test": ["64:ff9b:1::"],
+            "six-to-four.test": ["2002::"],
+            "mapped-private.test": ["::ffff:127.0.0.1"],
+            "nat64-private.test": ["64:ff9b::a00:1"],
         }
         client = SafeHTTPClient(resolver=resolver_for(mapping))
 
         for hostname in mapping:
             with self.subTest(hostname=hostname), self.assertRaises(UnsafeUrlError):
                 client.fetch(f"https://{hostname}/article")
+
+    def test_explicit_public_address_exceptions_and_true_public_ips_are_allowed(self) -> None:
+        mapping = {
+            "pcp-anycast.test": ["192.0.0.9"],
+            "turn-anycast.test": ["192.0.0.10"],
+            "public-v4.test": [PUBLIC_IP],
+            "public-v6.test": ["2606:2800:220:1:248:1893:25c8:1946"],
+        }
+        client = SafeHTTPClient(resolver=resolver_for(mapping))
+        with mock.patch.object(client, "_request_once", return_value=html_response()) as request:
+            for hostname in mapping:
+                with self.subTest(hostname=hostname):
+                    document = client.fetch(f"https://{hostname}/article")
+                    self.assertEqual(document.final_url, f"https://{hostname}/article")
+
+        self.assertEqual(request.call_count, len(mapping))
 
     def test_private_network_access_requires_explicit_opt_in(self) -> None:
         client = SafeHTTPClient(
@@ -169,7 +247,9 @@ class SafeHTTPClientTests(unittest.TestCase):
         with mock.patch("socket.create_connection", return_value=raw_socket) as create:
             http_connection = _PinnedHTTPConnection("public.test", PUBLIC_IP, 8080, 3)
             http_connection.connect()
-            create.assert_called_once_with((PUBLIC_IP, 8080), 3, None)
+            self.assertEqual(create.call_args.args[0], (PUBLIC_IP, 8080))
+            self.assertAlmostEqual(create.call_args.args[1], 3, delta=0.1)
+            self.assertIsNone(create.call_args.args[2])
 
         with mock.patch("socket.create_connection", return_value=raw_socket) as create:
             https_connection = _PinnedHTTPSConnection(
@@ -180,7 +260,9 @@ class SafeHTTPClientTests(unittest.TestCase):
                 context,
             )
             https_connection.connect()
-            create.assert_called_once_with((PUBLIC_IP, 443), 3, None)
+            self.assertEqual(create.call_args.args[0], (PUBLIC_IP, 443))
+            self.assertAlmostEqual(create.call_args.args[1], 3, delta=0.1)
+            self.assertIsNone(create.call_args.args[2])
             context.wrap_socket.assert_called_once_with(raw_socket, server_hostname="public.test")
 
     def test_unicode_paths_and_queries_are_encoded_before_the_request(self) -> None:
@@ -191,6 +273,71 @@ class SafeHTTPClientTests(unittest.TestCase):
             target.request_target,
             "/%C4%B0stanbul%20haber?q=%C5%9Feker%20ve%20%C3%A7ay",
         )
+
+    def test_absolute_timeout_includes_synchronous_dns_resolution(self) -> None:
+        def slow_resolver(host: str, port: int, **_: object):
+            time.sleep(0.5)
+            return resolver_for({})(host, port)
+
+        client = SafeHTTPClient(timeout=0.15, resolver=slow_resolver)
+        started = time.monotonic()
+        with self.assertRaisesRegex(FetchError, "DNS resolution exceeded the absolute fetch timeout"):
+            client.fetch("https://slow-dns.test/article")
+        self.assertLess(time.monotonic() - started, 0.4)
+
+    def test_absolute_timeout_is_shared_across_redirect_resolution(self) -> None:
+        def delayed_resolver(host: str, port: int, **_: object):
+            time.sleep(0.18)
+            return resolver_for({})(host, port)
+
+        client = SafeHTTPClient(timeout=0.3, max_redirects=1, resolver=delayed_resolver)
+        redirect = _RawResponse(302, "Found", {"location": "https://second.test/final"}, b"")
+        with mock.patch.object(
+            client,
+            "_request_once",
+            side_effect=[redirect, html_response()],
+        ) as request:
+            with self.assertRaisesRegex(FetchError, "DNS resolution exceeded the absolute fetch timeout"):
+                client.fetch("https://first.test/start")
+
+        self.assertEqual(request.call_count, 1)
+
+    def test_absolute_timeout_stops_a_slow_header_drip(self) -> None:
+        response = b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 0\r\n\r\n"
+        chunks = [(0.04, bytes([value])) for value in response]
+        with scripted_http_peer(chunks) as port:
+            client = SafeHTTPClient(
+                timeout=0.2,
+                allow_private_networks=True,
+                resolver=resolver_for({"slow-header.test": ["127.0.0.1"]}),
+            )
+            started = time.monotonic()
+            with self.assertRaisesRegex(FetchError, "absolute fetch timeout"):
+                client.fetch(f"http://slow-header.test:{port}/")
+            elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 0.6)
+
+    def test_absolute_timeout_stops_a_slow_body_drip(self) -> None:
+        headers = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: text/html\r\n"
+            b"Content-Length: 20\r\n"
+            b"Connection: close\r\n\r\n"
+        )
+        chunks = [(0, headers)] + [(0.04, b"x") for _ in range(20)]
+        with scripted_http_peer(chunks) as port:
+            client = SafeHTTPClient(
+                timeout=0.2,
+                allow_private_networks=True,
+                resolver=resolver_for({"slow-body.test": ["127.0.0.1"]}),
+            )
+            started = time.monotonic()
+            with self.assertRaisesRegex(FetchError, "absolute fetch timeout"):
+                client.fetch(f"http://slow-body.test:{port}/")
+            elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 0.6)
 
 
 if __name__ == "__main__":

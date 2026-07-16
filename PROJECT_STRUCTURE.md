@@ -26,8 +26,10 @@ news-extractor/
 │   ├── unit/
 │   │   ├── test_article_extractor.py
 │   │   ├── test_backlog.py
+│   │   ├── test_backlog_viewer.py
 │   │   ├── test_cli.py
-│   │   └── test_http_client.py
+│   │   ├── test_http_client.py
+│   │   └── test_validation_output.py
 │   └── validation/
 │       └── validate_live.py
 ├── archive/legacy_research/
@@ -45,6 +47,7 @@ news-extractor/
 - `cli.py` exposes the package as `news-extractor` and makes network bounds configurable.
 - `backlog.py` owns the SQLite/JSONL integration used by the collector bridge.
 - `tests/unit/` is deterministic, uses only the standard library, and is the required CI gate.
+- The backlog-viewer verifier guards DOM text rendering and the HTTP(S)-only link policy without adding a browser-test dependency.
 - `tests/fixtures/` contains synthetic Turkish documents; it does not contain copied publisher articles.
 - `tests/validation/validate_live.py` is an opt-in publisher-drift report, never a deterministic CI assertion.
 - `scripts/verify_distribution.py` verifies the wheel declares no runtime requirements.

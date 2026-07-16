@@ -130,6 +130,20 @@ class ArticleExtractorTests(unittest.TestCase):
         with self.assertLogs("news_extractor.article_extractor", level="WARNING"):
             self.assertIsNone(failing.extract("https://example.test/failure"))
 
+    def test_failure_logs_redact_url_credentials_and_query_secrets(self) -> None:
+        raw_url = "https://alice:super-secret@example.test/failure?token=top-secret#private"
+        failing = ArticleExtractor(
+            http_client=FakeHTTPClient(error=FetchError(f"failed while fetching {raw_url}"))
+        )
+
+        with self.assertLogs("news_extractor.article_extractor", level="WARNING") as logs:
+            self.assertIsNone(failing.extract(raw_url))
+
+        output = "\n".join(logs.output)
+        self.assertIn("https://example.test/failure", output)
+        self.assertNotIn("super-secret", output)
+        self.assertNotIn("top-secret", output)
+
     def test_batch_statistics_preserve_public_contract(self) -> None:
         extractor = ArticleExtractor()
         outcomes = {

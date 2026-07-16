@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import io
 import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
-from news_extractor.backlog import BacklogRecord, load_records, reextract, summarize, write_jsonl
+from news_extractor.backlog import (
+    BacklogRecord,
+    load_records,
+    print_pretty,
+    reextract,
+    summarize,
+    write_jsonl,
+)
 
 
 class FakeExtractor:
@@ -73,7 +82,7 @@ class BacklogTests(unittest.TestCase):
         self.assertIsNone(results[1]["extraction"])
         self.assertIsNone(results[1]["error"])
         self.assertIsNone(results[2]["extraction"])
-        self.assertEqual(results[2]["error"], "RuntimeError: synthetic failure")
+        self.assertEqual(results[2]["error"], "RuntimeError: extraction failed")
         summary = summarize(results)
         self.assertEqual(summary["total"], 3)
         self.assertEqual(summary["successes"], 1)
@@ -88,6 +97,35 @@ class BacklogTests(unittest.TestCase):
             write_jsonl(entries, destination)
 
             self.assertEqual(json.loads(destination.read_text(encoding="utf-8")), entries[0])
+
+    def test_pretty_output_redacts_urls_and_terminal_controls(self) -> None:
+        entries = [
+            {
+                "article_id": "7\x9b31m",
+                "title": "\x1b[31mOwned\x1b[0m\x85title",
+                "domain": "example.test\x90",
+                "source_url": "https://alice:super-secret@example.test/a?token=top-secret",
+                "canonical_url": "https://example.test/a?token=top-secret#private",
+                "extraction": {
+                    "method": "semantic-html\x1b[2J",
+                    "text_length": 20,
+                    "keywords": ["safe\x9b31m"],
+                    "text": "line one\n\x1b]0;hijack\x07line two",
+                },
+                "error": None,
+            }
+        ]
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            print_pretty(entries)
+
+        output = stdout.getvalue()
+        self.assertIn("https://example.test/a", output)
+        self.assertIn("Ownedtitle", output)
+        self.assertNotIn("super-secret", output)
+        self.assertNotIn("top-secret", output)
+        for control in ("\x1b", "\x85", "\x90", "\x9b"):
+            self.assertNotIn(control, output)
 
 
 if __name__ == "__main__":

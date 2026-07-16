@@ -14,7 +14,7 @@ This is a library and research project, not a hosted scraping service. The usefu
 | Surface | Current evidence |
 |---|---|
 | Extraction | JSON-LD-first and semantic `<article>`/`<main>` fallback paths |
-| Security | Per-hop URL/DNS validation, address-pinned sockets, TLS hostname verification, redirect/type/size/timeout bounds |
+| Security | Version-stable public-address policy, recursive transition-address checks, address-pinned sockets, TLS hostname verification, and one absolute fetch deadline |
 | Dependency health | No runtime or test dependencies; built wheel is checked for unexpected `Requires-Dist` metadata |
 | Compatibility | `ArticleExtractor`, `extract_article`, batch/stats, CLI, and backlog helpers remain available |
 | Unicode | Deterministic Turkish fixtures cover `İ`, `ı`, `ş`, `ğ`, `ü`, `ö`, and `ç` end to end |
@@ -80,13 +80,15 @@ python -m news_extractor.cli --help
 
 The CLI exits `0` only when every requested URL succeeds, `1` when any extraction fails, and `2` for invalid configuration.
 
+`--timeout` is one absolute wall-clock budget for the complete fetch. DNS resolution, every redirect and address attempt, TCP/TLS connection, request transmission, response headers, and response body all consume the same budget; a slow byte drip does not reset it.
+
 ## Extraction pipeline
 
-1. Validate an `http`/`https` URL and reject embedded credentials.
-2. Resolve the hostname; reject any non-public answer by default.
+1. Validate an `http`/`https` URL and reject embedded credentials, port zero, and invalid ports.
+2. Resolve the hostname under the fetch deadline; apply an explicit public-address policy to every answer and recursively validate IPv4 destinations embedded in transition formats.
 3. Connect the socket to the vetted address while preserving the original hostname for TLS verification and the `Host` header.
-4. Repeat validation for every redirect and reject HTTPS-to-HTTP downgrades.
-5. Require HTML/XHTML, identity encoding, a bounded response body, a bounded redirect count, and configured timeouts.
+4. Repeat validation for every redirect, share the original deadline across the full chain, and reject HTTPS-to-HTTP downgrades.
+5. Require HTML/XHTML, identity encoding, a bounded response body, a bounded redirect count, and an absolute deadline that cannot be extended by slow headers or body bytes.
 6. Parse schema.org JSON-LD and select the strongest `NewsArticle` or `Article` candidate.
 7. If structured article text is absent or too short, collect paragraph and blockquote content from semantic `<article>`/`<main>` regions while excluding navigation, forms, scripts, styles, sidebars, and footers.
 
@@ -117,7 +119,7 @@ Sites expose inconsistent metadata, so `title`, `date`, `description`, `image`, 
 
 ## Network security defaults
 
-The default client blocks private, loopback, link-local, reserved, multicast, and unspecified addresses—including mixed DNS answers where only one returned address is private. This is intended to reduce server-side request forgery risk when URLs originate outside your trust boundary.
+The default client uses explicit IPv4 and IPv6 network tables rather than Python's release-dependent `ipaddress.is_global` classification. It blocks private, loopback, link-local, shared, documentation, benchmark, reserved, site-local, multicast, unspecified, and deprecated transition ranges—including mixed DNS answers where only one answer is denied. IPv4-mapped, 6to4, Teredo, and well-known NAT64 forms are recursively checked so they cannot conceal a denied IPv4 destination. The globally reachable `192.0.0.9` and `192.0.0.10` anycast exceptions remain allowed.
 
 For a trusted internal deployment only, opt in explicitly:
 
@@ -130,6 +132,8 @@ news-extractor --allow-private-network 'http://intranet.example/article'
 ```
 
 Do not enable that option for user-supplied URLs. See [SECURITY.md](./SECURITY.md) for the threat model and reporting route.
+
+Human-readable diagnostics redact URL credentials, queries, and fragments and strip terminal control sequences from publisher text. The local backlog viewer renders untrusted JSONL scalars through DOM text nodes and links only validated HTTP(S) URLs.
 
 ## Batch and statistics API
 
