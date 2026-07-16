@@ -19,6 +19,12 @@ import textwrap
 from pathlib import Path
 from typing import Any, Iterable, List
 
+from news_extractor.article_extractor import (
+    _safe_error_for_log,
+    _safe_terminal_text,
+    _safe_url_for_log,
+)
+
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     default_file = Path(__file__).resolve().parents[1] / "backlog.jsonl"
@@ -101,14 +107,51 @@ def extract_field(data: Any, field: str) -> Any:
     return current
 
 
-def normalize_value(value: Any) -> str:
+def _field_leaf(field: str) -> str:
+    return field.rsplit(".", 1)[-1].lower().replace("-", "_")
+
+
+def _is_url_field(field: str) -> bool:
+    leaf = _field_leaf(field)
+    return leaf == "url" or leaf.endswith("_url")
+
+
+def _is_error_field(field: str) -> bool:
+    leaf = _field_leaf(field)
+    return leaf == "error" or leaf.endswith("_error")
+
+
+def _safe_scalar(value: Any, field: str) -> str:
+    if _is_url_field(field):
+        return _safe_url_for_log(value)
+    if _is_error_field(field):
+        return _safe_error_for_log(value)
+    return _safe_terminal_text(value)
+
+
+def _safe_json_value(value: Any, field: str) -> Any:
+    if isinstance(value, dict):
+        sanitized = {}
+        for key, item in value.items():
+            safe_key = _safe_terminal_text(key)
+            child_field = f"{field}.{safe_key}" if field else safe_key
+            sanitized[safe_key] = _safe_json_value(item, child_field)
+        return sanitized
+    if isinstance(value, (list, tuple)):
+        return [_safe_json_value(item, field) for item in value]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return _safe_scalar(value, field)
+
+
+def normalize_value(value: Any, field: str = "") -> str:
     if value is None:
         return ""
     if isinstance(value, (list, tuple)):
-        return ", ".join(str(item) for item in value)
+        return ", ".join(normalize_value(item, field) for item in value)
     if isinstance(value, dict):
-        return json.dumps(value, ensure_ascii=False)
-    return str(value)
+        return json.dumps(_safe_json_value(value, field), ensure_ascii=False)
+    return _safe_scalar(value, field)
 
 
 def wrap_value(value: str, width: int) -> str:
@@ -156,7 +199,11 @@ def print_separator(widths: List[int]) -> None:
 
 
 def print_row(row: List[str], widths: List[int]) -> None:
-    line_groups = [cell.splitlines() or [""] for cell in row]
+    safe_row = [
+        _safe_terminal_text(cell, preserve_newlines=True)
+        for cell in row
+    ]
+    line_groups = [cell.splitlines() or [""] for cell in safe_row]
     max_lines = max(len(lines) for lines in line_groups)
     for line_idx in range(max_lines):
         rendered_cells = []
@@ -167,11 +214,16 @@ def print_row(row: List[str], widths: List[int]) -> None:
 
 
 def print_table(table: List[List[str]], headers: List[str]) -> None:
-    widths = compute_widths(table, headers)
+    safe_headers = [_safe_terminal_text(header) for header in headers]
+    safe_table = [
+        [_safe_terminal_text(cell, preserve_newlines=True) for cell in row]
+        for row in table
+    ]
+    widths = compute_widths(safe_table, safe_headers)
     print_separator(widths)
-    print_row(headers, widths)
+    print_row(safe_headers, widths)
     print_separator(widths)
-    for row in table:
+    for row in safe_table:
         print_row(row, widths)
         print_separator(widths)
 
@@ -181,7 +233,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     try:
         rows = read_jsonl(args.file)
     except (FileNotFoundError, ValueError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"Error: {_safe_error_for_log(exc)}", file=sys.stderr)
         return 2
 
     filtered_rows = filter_rows(rows, args.failed_only, args.success_only)
@@ -196,7 +248,7 @@ def main(argv: Iterable[str] | None = None) -> int:
         cells = []
         for field in args.fields:
             raw_value = extract_field(record, field)
-            normalized = normalize_value(raw_value)
+            normalized = normalize_value(raw_value, field)
             wrapped = wrap_value(normalized, args.wrap)
             cells.append(wrapped)
         table.append(cells)

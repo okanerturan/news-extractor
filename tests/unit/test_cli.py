@@ -74,7 +74,7 @@ class CLITests(unittest.TestCase):
         article = {
             "url": "https://alice:super-secret@example.test/article?token=top-secret",
             "title": "\x1b[31mOwned\x1b[0m\x85title",
-            "text": "safe\n\x1b]0;hijack\x07body\x9b31m",
+            "text": "safe\n\t\x1b]0;hijack\x07body\x9b31m",
             "authors": ["A\x1b[2Juthor"],
             "keywords": ["key\x90word"],
             "date": "2026-01-01\x1b[5m",
@@ -93,6 +93,7 @@ class CLITests(unittest.TestCase):
         self.assertIn("Ownedtitle", output)
         self.assertNotIn("super-secret", output)
         self.assertNotIn("top-secret", output)
+        self.assertNotIn("\t", output)
         self.assertNotIn("\x1b", output)
         self.assertNotIn("\x85", output)
         self.assertNotIn("\x90", output)

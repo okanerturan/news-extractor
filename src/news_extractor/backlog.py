@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from news_extractor import ArticleExtractor
-from news_extractor.article_extractor import _safe_terminal_text, _safe_url_for_log
+from news_extractor.article_extractor import (
+    _safe_error_for_log,
+    _safe_terminal_text,
+    _safe_url_for_log,
+)
 
 
 @dataclass(frozen=True)
@@ -127,7 +131,6 @@ def print_pretty(results: Iterable[Dict[str, Any]]) -> None:
             preview = _safe_terminal_text(
                 raw_preview,
                 preserve_newlines=True,
-                preserve_tabs=True,
             )
             print("-" * 100)
             print(preview + ("..." if len(raw_preview) == 280 else ""))
@@ -135,5 +138,5 @@ def print_pretty(results: Iterable[Dict[str, Any]]) -> None:
             print("Extraction: ❌")
             error = entry.get("error")
             if error:
-                print(f"Error: {_safe_terminal_text(error)}")
+                print(f"Error: {_safe_error_for_log(error)}")
         print()

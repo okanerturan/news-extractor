@@ -25,6 +25,7 @@ if SRC_PATH.exists():
     sys.path.insert(0, str(SRC_PATH))
 
 from news_extractor.backlog import load_records, print_pretty, reextract, summarize
+from news_extractor.article_extractor import _safe_terminal_text
 
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
@@ -68,7 +69,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     args = parse_args(argv)
 
     if not args.db.exists():
-        print(f"Database not found: {args.db}", file=sys.stderr)
+        print(f"Database not found: {_safe_terminal_text(args.db)}", file=sys.stderr)
         return 2
 
     records = load_records(args.db, args.limit, args.offset)

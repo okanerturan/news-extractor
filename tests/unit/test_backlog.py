@@ -113,7 +113,20 @@ class BacklogTests(unittest.TestCase):
                     "text": "line one\n\x1b]0;hijack\x07line two",
                 },
                 "error": None,
-            }
+            },
+            {
+                "article_id": 8,
+                "title": "Failed",
+                "domain": "example.test",
+                "source_url": "https://example.test/failure",
+                "canonical_url": "https://example.test/failure",
+                "extraction": None,
+                "error": (
+                    "failed\t\x1b[31mred\x1b[0m at "
+                    "https://alice:super-secret@example.test/failure"
+                    "?token=top-secret#private"
+                ),
+            },
         ]
         stdout = io.StringIO()
         with redirect_stdout(stdout):
@@ -121,10 +134,11 @@ class BacklogTests(unittest.TestCase):
 
         output = stdout.getvalue()
         self.assertIn("https://example.test/a", output)
+        self.assertIn("https://example.test/failure", output)
         self.assertIn("Ownedtitle", output)
         self.assertNotIn("super-secret", output)
         self.assertNotIn("top-secret", output)
-        for control in ("\x1b", "\x85", "\x90", "\x9b"):
+        for control in ("\t", "\x1b", "\x85", "\x90", "\x9b"):
             self.assertNotIn(control, output)
 
 

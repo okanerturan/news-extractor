@@ -29,7 +29,8 @@ news-extractor/
 │   │   ├── test_backlog_viewer.py
 │   │   ├── test_cli.py
 │   │   ├── test_http_client.py
-│   │   └── test_validation_output.py
+│   │   ├── test_validation_output.py
+│   │   └── test_view_jsonl.py
 │   └── validation/
 │       └── validate_live.py
 ├── archive/legacy_research/

@@ -87,7 +87,6 @@ def _print_pretty(url: str, article: Dict[str, Any]) -> None:
     preview = _safe_terminal_text(
         (article.get("text") or "")[:300],
         preserve_newlines=True,
-        preserve_tabs=True,
     )
     print(preview + ("..." if preview else ""))
     print()
