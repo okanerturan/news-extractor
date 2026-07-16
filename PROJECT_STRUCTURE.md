@@ -1,73 +1,76 @@
-# Project Structure
+# Project structure
 
-## Maintained Surface
+## Maintained surface
 
-### Source (`src/news_extractor/`)
-- `article_extractor.py` – Newspaper4k primary + Trafilatura fallback implementation; its 5/6 result and 0.55s average are a dated November 2025 snapshot.
-- `cli.py` – Powers the `news-extractor` executable and `python -m news_extractor.cli` flow.
-- `__init__.py` – Exposes `ArticleExtractor` and `extract_article` for downstream imports.
-
-### Packaging & Tooling
-- `pyproject.toml` / `poetry.lock` – Poetry-managed metadata, lockfile, and CLI entry point.
-- `requirements.txt` – Exported via `poetry export` for environments that cannot use Poetry directly (install with `pip install -r requirements.txt && pip install -e .`).
-
-### Documentation
-- `README.md` – Operational guide, workflows, API examples.
-- `RESEARCH.md` – Deep dive on experimentation and rationale.
-
-### Examples & Validation
-- `examples/batch_extraction.py` – Ready-made batch usage script importing the packaged module.
-- `tests/unit/` – Deterministic package, fallback, backlog, and output tests run in GitHub Actions.
-- `tests/validation/test_ultimate_combo.py` – Opt-in live six-URL snapshot. Galleries remain out of scope by design.
-
-## Operational Workflow
-1. **Bootstrap** – `poetry install`.
-2. **Integrate** – Import `ArticleExtractor` (Python jobs) or call the `news-extractor` CLI inside larger workflows/microservices.
-3. **Verify** – Run `poetry run pytest tests/unit` for the deterministic gate and build the package.
-4. **Validate live behavior** – Run `poetry run python tests/validation/test_ultimate_combo.py` when refreshing network-dependent evidence. Report publisher drift separately from code failures.
-5. **Monitor** – Track success rate and fallback ratio as documented in `README.md`; the recorded 83.3% is a dated six-URL snapshot, not an SLA.
-
-## Archive (Historical Research) 📦
-All prior experimentation is frozen under `archive/legacy_research/`:
-
-| Path | Contents / Notes |
-|------|------------------|
-| `analysis/` | Narrative reports (`analysis_*`, `newspaper4k_*`, etc.) |
-| `docs/` | Earlier documentation set (pre-Nov 2025) |
-| `experiments/` | Manual scrapers, Crawl4AI trials, LLM hybrids |
-| `production/` | Obsolete Trafilatura-only implementation |
-| `scripts/` | Diagnostic helpers (e.g., detailed link discovery) |
-| `tests/research_archive/` | Full historical test harness (Crawl4AI, Trafilatura 2.0, etc.) |
-
-These assets are **deprecated**—do not import or execute them inside production flows. They are maintained as evidence for decisions captured in `RESEARCH.md`.
-
-## Repository Map
-
-```
+```text
 news-extractor/
-├── README.md / RESEARCH.md
-├── .github/workflows/test.yml
-├── LICENSE
-├── pyproject.toml
-├── requirements.txt
-├── src/
-│   └── news_extractor/
-│       ├── __init__.py
-│       ├── article_extractor.py
-│       └── cli.py
+├── .github/
+│   ├── dependabot.yml
+│   └── workflows/test.yml
+├── examples/
+│   ├── batch_extraction.py
+│   ├── scrape_news_gatherer_backlog.py
+│   ├── view_jsonl.py
+│   └── backlog_viewer.html
+├── scripts/
+│   └── verify_distribution.py
+├── src/news_extractor/
+│   ├── __init__.py
+│   ├── article_extractor.py
+│   ├── backlog.py
+│   └── cli.py
 ├── tests/
+│   ├── fixtures/
+│   │   ├── jsonld_news_article.html
+│   │   └── semantic_article.html
 │   ├── unit/
-│   └── validation/test_ultimate_combo.py
-├── examples/batch_extraction.py
-└── archive/
-    └── legacy_research/
-        ├── analysis/
-        ├── docs/
-        ├── experiments/
-        ├── production/
-        ├── scripts/
-        └── tests/research_archive/
+│   │   ├── test_article_extractor.py
+│   │   ├── test_backlog.py
+│   │   ├── test_cli.py
+│   │   └── test_http_client.py
+│   └── validation/
+│       └── validate_live.py
+├── archive/legacy_research/
+├── AGENTS.md
+├── LICENSE
+├── README.md
+├── RESEARCH.md
+├── SECURITY.md
+└── pyproject.toml
 ```
 
-**Last Updated:** July 2026
-**Status:** Maintained research-backed library; deterministic CI is required, while live-site evidence remains opt-in and dated.
+## Responsibilities
+
+- `article_extractor.py` owns the safe HTTP boundary, JSON-LD selection, semantic HTML fallback, batch API, and statistics API.
+- `cli.py` exposes the package as `news-extractor` and makes network bounds configurable.
+- `backlog.py` owns the SQLite/JSONL integration used by the collector bridge.
+- `tests/unit/` is deterministic, uses only the standard library, and is the required CI gate.
+- `tests/fixtures/` contains synthetic Turkish documents; it does not contain copied publisher articles.
+- `tests/validation/validate_live.py` is an opt-in publisher-drift report, never a deterministic CI assertion.
+- `scripts/verify_distribution.py` verifies the wheel declares no runtime requirements.
+
+## Packaging authority
+
+`pyproject.toml` is the single package manifest. The project intentionally has no `requirements.txt`, Poetry lockfile, runtime dependency list, or test dependency list. CI installs the package with `--no-deps`, runs `pip check`, and inspects built wheel metadata.
+
+## Historical boundary
+
+`archive/legacy_research/` freezes the November 2025 Newspaper4k, Trafilatura, Crawl4AI, Beautiful Soup, and Extruct experiments. Archived `.py` files are readable research artifacts, not supported scripts:
+
+- they are outside the `src` package;
+- they are outside unit-test discovery and compilation checks;
+- their former third-party dependencies are intentionally not declared;
+- they must not be imported by maintained code.
+
+The tracked root `backlog.jsonl` is also a dated November 2025 output sample. Its method values describe the retired implementation.
+
+## Standard workflow
+
+1. Install: `python -m pip install --no-deps --editable .`
+2. Test: `python -m unittest discover -s tests/unit -v`
+3. Compile: `python -m compileall -q src tests/unit tests/validation examples`
+4. Build: `python -m build`
+5. Inspect: `python scripts/verify_distribution.py dist`
+6. Optionally validate publishers: `python tests/validation/validate_live.py`
+
+**Status:** maintained dependency-free library; last structure refresh July 2026.

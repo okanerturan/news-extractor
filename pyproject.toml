@@ -1,32 +1,40 @@
-[tool.poetry]
+[build-system]
+requires = ["setuptools==83.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
 name = "news-extractor"
-version = "0.1.0"
-description = "Two-tier Turkish news article extractor with Newspaper4k primary and Trafilatura fallback."
-authors = ["Okan Erturan <okanert@gmail.com>"]
-license = "MIT"
+version = "0.2.0"
+description = "Dependency-free, SSRF-aware Turkish news article extraction library and CLI."
 readme = "README.md"
-repository = "https://github.com/okturan/news-extractor"
-keywords = ["news", "scraping", "turkey", "articles", "extraction"]
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Okan Erturan", email = "okanert@gmail.com" }]
+keywords = ["news", "scraping", "turkey", "articles", "json-ld", "security"]
 classifiers = [
-    "License :: OSI Approved :: MIT License",
+    "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Internet :: WWW/HTTP",
-    "Topic :: Text Processing :: Linguistic"
+    "Topic :: Text Processing :: Linguistic",
 ]
-packages = [{ include = "news_extractor", from = "src" }]
+dependencies = []
 
-[tool.poetry.dependencies]
-python = ">=3.10,<4.0"
-newspaper4k = "0.9.3.1"
-trafilatura = "^2.0.0"
-requests = "^2.31.0"
-
-[tool.poetry.group.dev.dependencies]
-pytest = "^7.0"
-
-[tool.poetry.scripts]
+[project.scripts]
 news-extractor = "news_extractor.cli:main"
 
-[build-system]
-requires = ["poetry-core>=2.2.1"]
-build-backend = "poetry.core.masonry.api"
+[project.urls]
+Homepage = "https://github.com/okturan/news-extractor"
+Repository = "https://github.com/okturan/news-extractor"
+Issues = "https://github.com/okturan/news-extractor/issues"
+Research = "https://github.com/okturan/news-extractor/blob/master/RESEARCH.md"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]

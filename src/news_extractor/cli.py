@@ -13,9 +13,35 @@ logger = logging.getLogger(__name__)
 
 def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Extract Turkish news articles via Newspaper4k → Trafilatura fallback strategy."
+        description="Extract Turkish news articles with a dependency-free, SSRF-aware parser."
     )
     parser.add_argument("urls", nargs="+", help="One or more article URLs to extract.")
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=10,
+        help="Per-request timeout in seconds (default: 10).",
+    )
+    parser.add_argument(
+        "--max-bytes",
+        type=int,
+        default=2_000_000,
+        help="Maximum response body size in bytes (default: 2000000).",
+    )
+    parser.add_argument(
+        "--max-redirects",
+        type=int,
+        default=5,
+        help="Maximum validated redirect hops (default: 5).",
+    )
+    parser.add_argument(
+        "--allow-private-network",
+        action="store_true",
+        help=(
+            "Allow private, loopback, and link-local destinations. "
+            "Use only for trusted internal URLs."
+        ),
+    )
     parser.add_argument(
         "--min-text-length",
         type=int,
@@ -60,7 +86,17 @@ def main(argv: Iterable[str] | None = None) -> int:
         level=getattr(logging, args.log_level),
         format="%(levelname)s:%(name)s:%(message)s",
     )
-    extractor = ArticleExtractor(min_text_length=args.min_text_length)
+    try:
+        extractor = ArticleExtractor(
+            min_text_length=args.min_text_length,
+            timeout=args.timeout,
+            max_response_bytes=args.max_bytes,
+            max_redirects=args.max_redirects,
+            allow_private_networks=args.allow_private_network,
+        )
+    except ValueError as exc:
+        logger.error("Invalid configuration: %s", exc)
+        return 2
 
     successes = 0
     for url in args.urls:

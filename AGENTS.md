@@ -1,39 +1,38 @@
-# Repository Guidelines
+# Repository guidelines
 
-## Project Structure & Module Organization
-- `src/news_extractor/` holds the production package: `article_extractor.py` (core logic), `cli.py` (command-line entry), and `__init__.py` (public exports). Treat this directory as the only source for imports.
-- `tests/unit/` contains deterministic, network-free pytest coverage and is the required CI gate.
-- `tests/validation/` contains opt-in live suites: `test_ultimate_combo.py` (canonical 6-URL snapshot) and `compare_with_jina.py` (side-by-side reader comparison). Galleries intentionally fail—log but do not block.
-- `examples/batch_extraction.py` demonstrates batch usage; reuse it when creating new sample code.
-- Backlog helpers now live in the `news_extractor.backlog` module—scripts (`examples/scrape_news_gatherer_backlog.py`, `view_jsonl.py`, `backlog_viewer.html`) are thin wrappers. Keep module API and docs in sync.
-- `examples/scrape_news_gatherer_backlog.py`, `examples/view_jsonl.py`, and `examples/backlog_viewer.html` are now documented in `README.md` under "Backlog Inspection Tools"—update both docs and scripts together.
-- `archive/legacy_research/` preserves deprecated experiments, docs, and legacy scripts. Never depend on it at runtime; cite it only for research context.
+## Maintained boundaries
 
-## Build, Test, and Development Commands
-- `poetry install` – resolves dependencies, sets up the managed virtualenv, and installs the package.
-- `poetry run pytest tests/unit` – runs the deterministic CI suite.
-- `poetry build` – builds the wheel and source distribution checked by CI.
-- `poetry run news-extractor <url ...>` or `poetry run python -m news_extractor.cli <url ...>` – run the extractor against one or more URLs.
-- `poetry run python tests/validation/test_ultimate_combo.py` – regression benchmark; expect 5/6 successes (gallery excluded).
-- `poetry run python tests/validation/compare_with_jina.py` – compare our output with `https://r.jina.ai/<url>` and review previews manually.
+- `src/news_extractor/` is the only production package.
+- `tests/unit/` is deterministic and standard-library-only; it is the required CI gate.
+- `tests/fixtures/` contains synthetic, redistribution-safe Turkish HTML.
+- `tests/validation/validate_live.py` is opt-in and network-dependent. Never convert publisher availability into a required CI assertion.
+- `archive/legacy_research/` is frozen historical evidence. Do not import, execute, compile, modernize, or depend on its scripts.
+- `backlog.jsonl` is a dated November 2025 output sample; its old method labels are not current API values.
 
-## Coding Style & Naming Conventions
-- Python 3.10+ only. Use type hints, `from __future__ import annotations`, and explicit return types (see `article_extractor.py`).
-- Follow standard PEP8/Black-style formatting: 4-space indents, snake_case for variables/functions, PascalCase for classes.
-- Keep inline comments rare and descriptive (e.g., clarifying fallback logic). Avoid verbose docstrings unless documenting public APIs.
+## Commands
 
-## Testing Guidelines
-- Deterministic behavior belongs in `tests/unit/` and must not require live network access.
-- Live publisher checks remain in `tests/validation/` and are reported separately from CI.
-- Name new tests `test_<purpose>.py`; use pytest for unit coverage and executable scripts for live validation.
-- Manual verification is required whenever output previews mention 404/boilerplate text—flag those URLs explicitly in test logs.
+```bash
+python -m pip install --no-deps --editable .
+python -m pip check
+python -m unittest discover -s tests/unit -v
+python -m compileall -q src tests/unit tests/validation examples
+python -m build
+python scripts/verify_distribution.py dist
+news-extractor --help
+```
 
-## Commit & Pull Request Guidelines
-- Git history is not available in this workspace, so default to Conventional Commit style (`feat:`, `fix:`, `docs:`) with concise imperative descriptions.
-- PRs should include: summary of changes, affected commands/tests, validation evidence (copy test command + result), and any manual-review notes (e.g., galleries, removed articles).
-- Link related issues or TODO references inline so future agents can trace context quickly.
+Run `python tests/validation/validate_live.py` only when explicitly refreshing live evidence. Record publisher drift separately from code failures.
 
-## Security & Configuration Tips
-- Never run archived scrapers in production—they may require Playwright or external browsers.
-- Network access is restricted; document any URL fetches that need elevated permissions.
-- Keep API keys/config out of the repo; rely on environment variables when extending the CLI or FastAPI wrapper.
+## Code and security expectations
+
+- Support Python 3.10+ and use type hints plus `from __future__ import annotations`.
+- Keep runtime and deterministic tests dependency-free unless a documented architecture decision proves a new package is necessary.
+- Preserve `ArticleExtractor`, `extract_article`, `extract_batch`, `get_stats`, CLI, and backlog contracts.
+- Treat every remote URL as untrusted. Any network change needs tests for schemes, credentials, address classes, mixed DNS, redirect targets, TLS downgrades, response types, sizes, and timeouts.
+- DNS validation must remain connected to the actual socket address; do not replace it with a check followed by a second uncontrolled resolver call.
+- Private-network access must remain an explicit, documented opt-in.
+- Escape or otherwise safely handle extracted publisher content at its eventual destination.
+
+## Pull requests
+
+Use a focused commit and keep the PR in draft until independent review. Include exact test/build/package commands and distinguish deterministic evidence from any live URL sample. Do not claim a success rate without a dated, versioned corpus and a stated denominator.

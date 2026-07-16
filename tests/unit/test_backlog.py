@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import tempfile
+import unittest
 from pathlib import Path
-
-import pytest
 
 from news_extractor.backlog import BacklogRecord, load_records, reextract, summarize, write_jsonl
 
@@ -15,7 +15,7 @@ class FakeExtractor:
             raise RuntimeError("synthetic failure")
         if url.endswith("/empty"):
             return None
-        return {"method": "newspaper4k", "text": "content", "text_length": 7}
+        return {"method": "semantic-html", "text": "content", "text_length": 7}
 
 
 def create_backlog(path: Path) -> None:
@@ -51,39 +51,44 @@ def record(article_id: int, suffix: str) -> BacklogRecord:
     return BacklogRecord(article_id, url, url, suffix.title(), "example.test", article_id)
 
 
-def test_load_records_applies_newest_first_pagination(tmp_path: Path) -> None:
-    database = tmp_path / "articles.db"
-    create_backlog(database)
+class BacklogTests(unittest.TestCase):
+    def test_load_records_applies_newest_first_pagination(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "articles.db"
+            create_backlog(database)
 
-    records = load_records(database, limit=2, offset=1)
+            records = load_records(database, limit=2, offset=1)
 
-    assert [item.article_id for item in records] == [3, 1]
-    assert [item.title for item in records] == ["Middle", "Old"]
+        self.assertEqual([item.article_id for item in records], [3, 1])
+        self.assertEqual([item.title for item in records], ["Middle", "Old"])
+
+    def test_reextract_captures_success_empty_and_unexpected_errors(self) -> None:
+        results = reextract(
+            [record(1, "ok"), record(2, "empty"), record(3, "error")],
+            extractor=FakeExtractor(),  # type: ignore[arg-type]
+        )
+
+        self.assertEqual(results[0]["extraction"]["method"], "semantic-html")
+        self.assertIsNone(results[0]["error"])
+        self.assertIsNone(results[1]["extraction"])
+        self.assertIsNone(results[1]["error"])
+        self.assertIsNone(results[2]["extraction"])
+        self.assertEqual(results[2]["error"], "RuntimeError: synthetic failure")
+        summary = summarize(results)
+        self.assertEqual(summary["total"], 3)
+        self.assertEqual(summary["successes"], 1)
+        self.assertAlmostEqual(summary["success_rate"], 100 / 3)
+        self.assertEqual(summarize([]), {"total": 0, "successes": 0, "success_rate": 0.0})
+
+    def test_write_jsonl_preserves_unicode_and_creates_parent_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "nested" / "results.jsonl"
+            entries = [{"title": "Türkçe başlık", "extraction": None}]
+
+            write_jsonl(entries, destination)
+
+            self.assertEqual(json.loads(destination.read_text(encoding="utf-8")), entries[0])
 
 
-def test_reextract_captures_success_empty_and_unexpected_errors() -> None:
-    results = reextract(
-        [record(1, "ok"), record(2, "empty"), record(3, "error")],
-        extractor=FakeExtractor(),
-    )
-
-    assert results[0]["extraction"]["method"] == "newspaper4k"
-    assert results[0]["error"] is None
-    assert results[1]["extraction"] is None
-    assert results[1]["error"] is None
-    assert results[2]["extraction"] is None
-    assert results[2]["error"] == "RuntimeError: synthetic failure"
-    summary = summarize(results)
-    assert summary["total"] == 3
-    assert summary["successes"] == 1
-    assert summary["success_rate"] == pytest.approx(100 / 3)
-    assert summarize([]) == {"total": 0, "successes": 0, "success_rate": 0.0}
-
-
-def test_write_jsonl_preserves_unicode_and_creates_parent_directory(tmp_path: Path) -> None:
-    destination = tmp_path / "nested" / "results.jsonl"
-    entries = [{"title": "Türkçe başlık", "extraction": None}]
-
-    write_jsonl(entries, destination)
-
-    assert json.loads(destination.read_text(encoding="utf-8")) == entries[0]
+if __name__ == "__main__":
+    unittest.main()

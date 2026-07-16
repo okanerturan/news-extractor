@@ -3,9 +3,9 @@
 Bridge script: reuse the News Extractor CLI on URLs that already exist
 inside the News Gatherer SQLite database so we can inspect full-text results.
 
-Usage (from the news-extractor project root, after `poetry install`):
+Usage (from the news-extractor project root, after `pip install -e .`):
 
-    poetry run python examples/scrape_news_gatherer_backlog.py \
+    python examples/scrape_news_gatherer_backlog.py \
         --db ../news-gatherer/output/news-gatherer.db \
         --limit 25 \
         --format json

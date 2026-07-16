@@ -21,7 +21,8 @@ print("Turkish News Article Extractor - Batch Example")
 print("=" * 80)
 print()
 
-# Create extractor
+# Create the dependency-free extractor. Remote destinations are restricted to
+# public HTTP(S) addresses unless private-network access is explicitly enabled.
 extractor = ArticleExtractor()
 
 # Extract all articles

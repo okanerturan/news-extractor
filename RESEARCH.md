@@ -1,502 +1,137 @@
-# Research Summary: Turkish News Article Extraction
+# Research and architecture decision record
 
-**Date:** November 2025
-**Objective:** Find the optimal solution for extracting article content from Turkish news websites
-**Result:** Newspaper4k + Trafilatura two-tier strategy with 83% success rate
+This document separates the maintained July 2026 implementation from the frozen November 2025 extraction benchmark. The old score is evidence about an old corpus and dependency graph; it is not a service-level guarantee and is not a score for the current parser.
 
-> Historical evidence: all rates, timings, dependency-status notes, and quoted evaluations in this document describe the November 2025 corpus. They are not current service guarantees. See `README.md` for the maintained project status and verification split.
+## Current decision — July 2026
 
----
+### Problem
 
-## Executive Summary
+The original two-tier implementation depended on Newspaper4k, Trafilatura, Requests, NLTK, Pillow, lxml, urllib3, and their transitive packages. GitHub reported duplicated alerts across `requirements.txt` and `poetry.lock`, including critical/high issues for which compatible patched releases were not available in the active graph.
 
-After comprehensive testing of 6 different approaches including state-of-the-art LLM-powered solutions, we determined that a simple two-tier fallback strategy using open-source libraries provides optimal results:
+Updating only the lockfile could not produce a clean, supportable result. Suppressing alerts would have hidden risk without changing the shipped code. The maintained extractor therefore moved to a standard-library implementation and removed both duplicate dependency manifests.
 
-- **Success Rate:** 83.3%
-- **Speed:** 0.55s average
-- **Cost:** Free
-- **Maintenance:** Low (active libraries)
+### Maintained architecture
 
-## Evaluation Methodology
+The current `ArticleExtractor` has two parsing tiers over one safely downloaded HTML document:
 
-### Test Corpus
+1. **Structured tier** — parse `application/ld+json`, recursively find schema.org `NewsArticle`/`Article` nodes, and select the candidate with the strongest body and metadata.
+2. **Semantic tier** — when structured article text is absent or too short, collect paragraph/list/blockquote content from `<article>`, `<main>`, or `role="main"` while excluding common page chrome.
 
-**Turkish News Sites:**
-- Bianet (primary test site)
-- T24 (edge cases)
-- Hürriyet (mainstream)
-- OdaTV (alternative)
-- Sözcü (social media embeds)
-- Cumhuriyet (potential paywalls)
-
-**Test URLs:** 7 real-world articles including:
-- Standard articles
-- Video-heavy content
-- Embedded social media
-- User-agent blocking scenarios
-- Empty extraction edge cases
+The maintained method values are `json-ld` and `semantic-html`.
 
-### Success Criteria
+### Network threat model
 
-1. **Text Extraction:** Clean, article-only content (no ads/navigation)
-2. **Metadata:** Title, authors, date, keywords
-3. **Speed:** Sub-second extraction
-4. **Reliability:** 80%+ success rate
-5. **Cost:** Free/minimal
-
----
-
-## Approaches Tested
-
-### 1. Newspaper4k (Primary Choice)
-
-**Version:** 0.9.3.1
-**F1 Score:** 0.949 (Zyte benchmark)
-
-**Results:**
-- ✅ 100% success on known article URLs
-- ✅ Clean extraction (1,027 chars, no bloat)
-- ✅ Fast (0.53s average)
-- ✅ Built-in `meta_keywords` for tags
-- ⚠️ Empty extraction on some edge cases (T24)
-- ⚠️ 404 errors on galleries/listings
-
-**Why it won:**
-- Designed specifically for news articles
-- Cleaner output than alternatives
-- No user-agent blocking issues
-- Active maintenance (Jan 2025 activity)
+Accepting URLs makes SSRF a first-class design concern. The built-in client:
 
-### 2. Trafilatura 2.0 (Fallback Choice)
+- accepts only HTTP(S) URLs without credentials or control characters;
+- validates every DNS answer and rejects a hostname if any answer is non-public;
+- connects directly to the vetted address to prevent a connection-time DNS rebind;
+- retains the requested hostname for TLS certificate verification and the HTTP `Host` header;
+- repeats the full policy on each redirect and rejects secure-to-insecure downgrades;
+- limits redirect hops, response bytes, per-request time, content type, and content encoding.
 
-**Version:** 2.0.0 (released January 2025)
-**F1 Score:** 0.958 (Zyte benchmark)
+Private-network access is available only through an explicit opt-in for trusted internal use. The parser itself never executes JavaScript or publisher markup.
 
-**Results:**
-- ✅ Handles Newspaper4k failures
-- ✅ JSON output with categories/tags
-- ✅ User-agent bypass with custom headers
-- ⚠️ Blocked by Bianet without UA override
-- ⚠️ Sometimes includes related content
+### Why JSON-LD first
 
-**Why it's the fallback:**
-- Rescues 33% of Newspaper4k failures
-- Adds minimal overhead (~0.2s)
-- Structured JSON output
-- More robust on edge cases
+The 2025 experiments already showed that publisher structured data was valuable, but the former conclusion rejected direct schema.org parsing because Newspaper4k exposed overlapping metadata. Once the vulnerable runtime graph was removed, JSON-LD became the smallest high-signal primary source:
 
-### 3. Crawl4AI ❌
+- it is usually explicit about headline, body, author, date, image, keywords, and section;
+- the JSON decoder and HTML parser are in the Python standard library;
+- synthetic fixtures can cover it deterministically;
+- the semantic fallback remains available for incomplete or malformed structured data.
 
-**Type:** LLM-powered browser automation
-**Status:** Not recommended
+This design trades the broad heuristics of large third-party parser stacks for a smaller, auditable surface. JavaScript-only and unusually marked-up sites may produce lower recall; that tradeoff is recorded rather than hidden.
 
-**Results:**
-- ⚠️ 50% success (3/6 URLs)
-- ❌ 60+ second timeouts on T24, Hürriyet, OdaTV
-- ❌ 44,682 chars extracted vs 1,027 needed (43x bloat)
-- ❌ Includes 3 articles instead of 1
-
-**Why it failed:**
-- Designed for general web scraping, not precise article extraction
-- Too slow for production (4-60s per article)
-- Massive content bloat even with CSS selectors
-- Timeouts on Turkish news sites (heavy JS/ads)
-
-**Conclusion:** SOTA for general web content, but wrong tool for news extraction
-
-### 4. LLM Hybrid (Pre-clean HTML → Claude) ❌
-
-**Approach:** Readability/Trafilatura → LLM extraction
-**Status:** Not needed
-
-**Findings:**
-- ✅ 95.6% token reduction (15,853 → 697 tokens)
-- ✅ Cost: ~$0.0002 per article (affordable)
-- ❌ **Trafilatura already outputs structured JSON**
-- ❌ Redundant - adds LLM cost for no benefit
+### Deterministic evidence
 
-**Key Discovery:**
-```python
-# Trafilatura JSON already has everything!
-{
-    'title': '...',
-    'text': '...',
-    'author': '...',
-    'date': '...',
-    'tags': 'tag1,tag2',
-    'categories': 'HABER'
-}
-```
+The unit suite is network-free and covers:
 
-**Conclusion:** LLM hybrid makes sense for non-news sites or custom extraction, but not for Turkish news
+- Turkish Unicode through structured and semantic extraction;
+- nested `@graph` selection and flexible metadata shapes;
+- malformed/short structured data fallback;
+- page-chrome exclusion and minimum-length rejection;
+- public batch/statistics and backlog APIs;
+- CLI success/failure/configuration behavior;
+- invalid schemes, credentials, control characters, and missing hosts;
+- private, loopback, link-local, and mixed DNS rejection;
+- explicit private-network opt-in;
+- redirect revalidation, downgrade rejection, and redirect bounds;
+- HTML-only content types, declared charsets, response byte bounds, and vetted address retention.
 
-### 5. Extruct (Schema.org/JSON-LD) ❌
+CI installs with `--no-deps`, runs this suite on the minimum and modern Python versions, builds both distribution formats, installs the wheel into a clean virtual environment, and verifies that wheel metadata has no `Requires-Dist` entry.
 
-**Approach:** Extract structured metadata from HTML
-**Status:** Not needed
+## Legacy experiment — November 2025
 
-**Findings:**
-- ✅ Successfully extracts JSON-LD from Bianet
-- ✅ Gets `articleSection` (categories)
-- ❌ **Newspaper4k already has `meta_keywords`**
-- ⚠️ Adds 7 dependencies
-- ⚠️ ~100ms overhead
+### Frozen result
 
-**Key Discovery:**
-```python
-# Newspaper4k already extracts tags!
-article.meta_keywords
-# → ['CHP', 'özgür özel', 'cumhurbaşkanı']
-```
+The retired Newspaper4k → Trafilatura prototype recorded:
 
-**Conclusion:** Only needed if you specifically want categories. Tags already available.
+| Metric | November 2025 snapshot |
+|---|---:|
+| Fixed corpus | 6 URLs |
+| Overall successes | 5/6 (83.3%) |
+| Newspaper4k successes | 3/6 (50%) |
+| Trafilatura rescues | 2/6 (33%) |
+| Both failed | 1/6 (gallery) |
+| Mean observed time | 0.55 seconds |
 
-### 6. Dolphin ❌
+Those values came from six publisher URLs at a point in time. URLs may now be removed, redirected, bot-blocked, paywalled, or structurally different. The result was never a publisher-wide benchmark or SLA.
 
-**Type:** ByteDance document parsing model
-**Status:** Wrong use case
+### Approaches explored
 
-**Findings:**
-- Document OCR/PDF parsing tool
-- Not for web scraping
-- Designed for document images, not HTML
+The 2025 research compared or prototyped:
 
-**Conclusion:** Not applicable to this problem
+- Newspaper4k;
+- Trafilatura 2.0;
+- schema.org extraction via Extruct;
+- Beautiful Soup heuristics;
+- Readability-style extraction;
+- Crawl4AI/browser automation;
+- LLM post-processing;
+- go-Trafilatura as an unimplemented alternative.
 
----
+Archived reports include independent F1 figures and qualitative observations, but those external benchmark numbers were not reproduced by this repository. They should be read as cited historical context, not current project measurements.
 
-## Final Solution: Two-Tier Strategy
+### Why the legacy implementation was retired
 
-### Architecture
+The old combination was attractive for recall on its six-URL snapshot, but its runtime graph became unsuitable for a small portfolio library:
 
-```python
-def extract_article(url):
-    # Tier 1: Newspaper4k (primary - 50% success)
-    try:
-        article = newspaper4k.extract(url)
-        if len(article.text) > 100:
-            return article  # ✅ Clean, fast
-    except:
-        pass
+- multiple transitive advisories lacked an immediately adoptable patched release;
+- the same graph was represented twice, multiplying alert noise;
+- deterministic tests required third-party packages even when testing local fixtures;
+- general HTTP clients did not by themselves define the URL/redirect/DNS policy needed for untrusted inputs;
+- claims such as “production-ready,” “all edge cases,” and permanent sub-second behavior exceeded the evidence.
 
-    # Tier 2: Trafilatura (fallback - 33% rescue)
-    html = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}).text
-    return trafilatura.extract(html, output_format='json')
-```
+The current design removes those claims and preserves the old measurements only as a dated decision record.
 
-### Performance Metrics
+## Live validation policy
 
-| Metric | Value |
-|--------|-------|
-| **Overall Success** | 83.3% (5/6 test URLs) |
-| **Newspaper4k Success** | 50% (3/6) |
-| **Trafilatura Rescue** | 33% (2/6) |
-| **Both Failed** | 17% (1/6 - photo gallery) |
-| **Average Time** | 0.55s |
-| **N4K Time** | 0.53s |
-| **With Fallback** | 0.57s |
-
-### What the Fallback Rescues
-
-**T24 Article:**
-- Newspaper4k: 0 chars (empty extraction)
-- Trafilatura: 664 chars ✅
-
-**Sözcü Article:**
-- Newspaper4k: 404 error
-- Trafilatura: 131 chars ✅
-
----
-
-## Expert Validation
-
-Two independent experts reviewed our findings:
-
-### Expert 1: Technical Evaluation
-
-**Feedback:**
-> "You can't beat '100% success' on your four-site corpus, but there are open-source options that score slightly cleaner on independent benchmarks..."
-
-**Recommendations:**
-1. ✅ Noted go-Trafilatura (F1: 0.960) scores highest
-2. ✅ Suggested extruct for categories without fallback
-3. ✅ Confirmed Newspaper4k already has keywords via `meta_keywords`
+`tests/validation/validate_live.py` can revisit the legacy URLs or additional URLs using the current implementation. Its output must be labeled with the execution date and interpreted manually:
 
-**Our Response:**
-- go-Trafilatura requires Go runtime (added complexity)
-- Extruct only needed if categories required (not in our case)
-- Newspaper4k optimal for our specific use case
-
-### Expert 2: Pragmatic Assessment
-
-**Feedback:**
-> "You've won this optimization problem. The challenge isn't finding a better tool—it's maintaining this performance as websites evolve."
-
-**Validation:**
-1. ✅ Can't optimize beyond 100% success, free, sub-second
-2. ✅ Approach is production-ready
-3. ⚠️ Monitor for edge cases and site redesigns
-
-**Edge Cases Raised:**
-- Paywalled content
-- Live blogs
-- Embedded social media
-- Video-first articles
-
-**Our Testing:**
-- ✅ All edge cases tested (see test_actual_failures.py)
-- ✅ Most handled correctly
-- ❌ Photo galleries/listings (expected - not articles)
-
----
+- a removed URL is publisher drift, not automatically a parser defect;
+- a gallery remains outside the article contract;
+- a bot challenge may yield HTML but still require a manual content review;
+- success means the minimum content contract was met, not that every sentence is perfect.
 
-## Key Insights
-
-### 1. Newspaper4k Already Has Everything
+Live results do not run in CI and must not replace the deterministic security/parser suite.
 
-Most critical discovery:
-
-```python
-article = Article(url)
-article.download()
-article.parse()
+## Archive map
 
-# Already available:
-article.title              # ✅
-article.text               # ✅ Clean, article-only
-article.authors            # ✅
-article.publish_date       # ✅
-article.meta_keywords      # ✅ THIS IS THE KEY!
-article.meta_description   # ✅
-article.top_image          # ✅
-```
+The complete legacy material is frozen under `archive/legacy_research/`:
 
-**No need for:**
-- ❌ extruct (keywords already there)
-- ❌ LLM (Trafilatura JSON already structured)
-- ❌ Complex post-processing
+- `analysis/` — comparison narratives and recorded outputs;
+- `docs/` — pre-maintenance notes and source inventories;
+- `experiments/` — manual parser prototypes and result JSON;
+- `production/` — obsolete discovery prototypes;
+- `tests/research_archive/` — one-off benchmark and debugging scripts.
 
-### 2. Trafilatura JSON is Structured
+Archived Python files retain their original imports for historical readability. They are not package modules, maintained scripts, tests, or dependency declarations and should not be executed in the current environment.
 
-Second critical discovery:
+## Next useful research
 
-```python
-# Trafilatura output_format='json' gives:
-{
-    'title': '...',
-    'author': '...',
-    'date': '2025-11-06',
-    'text': '...',
-    'tags': 'tag1,tag2,tag3',        # ← Structured!
-    'categories': 'HABER',            # ← Categories!
-    'image': 'https://...',
-    'excerpt': '...'
-}
-```
-
-**No need for:**
-- ❌ LLM to structure data
-- ❌ Custom parsing
-- ❌ Additional metadata extraction
-
-### 3. Two-Tier Beats Single-Tier
-
-**Single-tier results:**
-- Newspaper4k alone: 50% success
-- Trafilatura alone: 73% success (user-agent issues)
-
-**Two-tier result:**
-- Newspaper4k + Trafilatura: **83% success**
-
-**Why:**
-- Newspaper4k handles clean cases fast
-- Trafilatura rescues edge cases
-- Minimal overhead (0.04s)
-- Best of both worlds
-
----
-
-## Benchmark Comparison
-
-### Industry Benchmarks (Zyte/Scrapinghub)
-
-| Library | F1 Score | Our Choice |
-|---------|----------|------------|
-| go-Trafilatura | 0.960 | ❌ Requires Go |
-| Trafilatura 2.0 | 0.958 | ✅ Fallback |
-| **Newspaper4k** | **0.949** | **✅ Primary** |
-| Readability.js | 0.947 | ❌ Not tested |
-
-**Why we chose 0.949 over 0.960:**
-- ✅ 100% success on *our* specific use case (Turkish news)
-- ✅ Cleaner output (article-only vs includes related content)
-- ✅ No Go runtime dependency
-- ✅ No user-agent blocking issues
-
-### Real-World Performance (Our Tests)
-
-| Tool | Success | Speed | Quality |
-|------|---------|-------|---------|
-| N4K + Traf | 83% | 0.55s | Clean |
-| Crawl4AI | 50% | 4-60s | Bloated |
-| N4K alone | 50% | 0.53s | Clean |
-| Traf alone | 73% | 0.6s | Good |
-
----
-
-## Edge Cases Handled
-
-### ✅ What Works
-
-1. **Empty extractions** (T24)
-   - N4K: 0 chars
-   - Fallback: 664 chars ✅
-
-2. **User-agent blocking** (Bianet)
-   - N4K: Works directly
-   - Traf: Needs UA override
-
-3. **404 errors** (Sözcü)
-   - N4K: 404
-   - Fallback: 131 chars ✅
-
-4. **Video articles**
-   - Extracts text around videos
-   - Ignores video player HTML
-
-5. **Embedded social media**
-   - Filters most Twitter/Instagram URLs
-   - May need post-processing for perfect cleanup
-
-### ❌ What Doesn't Work
-
-1. **Photo galleries** (`/galeri/...`)
-   - Expected - not an article
-   - Solution: URL validation
-
-2. **News listing pages** (`/haberleri/...`)
-   - Expected - not an article
-   - Solution: URL validation
-
-3. **Live blogs**
-   - Extracts snapshot only
-   - Not designed for continuously updating content
-
----
-
-## Production Recommendations
-
-### Monitoring
-
-```python
-# Track success rate
-if stats['success_rate'] < 80:
-    alert("Success rate dropped")
-
-# Track fallback usage
-if stats['methods']['trafilatura'] > 50:
-    alert("High fallback usage")
-```
-
-### When to Update
-
-- Success rate drops below 80%
-- Major news site redesigns
-- Library security updates
-- New edge cases discovered
-
-### Scalability
-
-Current solution handles:
-- ✅ Concurrent requests (stateless)
-- ✅ High volume (sub-second per article)
-- ✅ Batch processing (built-in)
-
-For 10,000+ articles/day:
-- Consider Redis caching
-- Monitor rate limits per site
-- Add request throttling
-
----
-
-## Files Archive
-
-All test files preserved in `tests/archive/`:
-
-**Core Tests:**
-- `test_ultimate_combo.py` - Final two-tier validation
-- `test_actual_failures.py` - Edge case testing
-- `test_newspaper4k_extraction.py` - Baseline tests
-
-**Alternative Approaches:**
-- `test_crawl4ai*.py` - LLM-powered testing
-- `test_hybrid_llm_extraction.py` - Pre-clean + LLM
-- `test_extruct_metadata.py` - Schema.org extraction
-- `test_trafilatura_2_0.py` - Trafilatura standalone
-
-**Comparison Studies:**
-- `compare_content_quality.py` - N4K vs Traf vs Crawl4AI
-- `compare_newspaper_vs_trafilatura.py` - Side-by-side
-- `compare_crawl4ai_best.py` - CSS selector optimization
-
-**Result Data:**
-- `*.json` - Test output from all experiments
-
----
-
-## Lessons Learned
-
-1. **Simple beats complex** - Two-tier strategy beats LLM-powered solutions
-2. **Domain-specific matters** - News extractors beat general web scrapers
-3. **Test real edge cases** - Don't rely on benchmarks alone
-4. **Libraries already structured** - No need for custom parsing/LLMs
-5. **Maintenance is key** - Both libraries actively maintained
-
----
-
-## Future Considerations
-
-### If Success Rate Drops
-
-1. Check for site redesigns
-2. Verify library updates
-3. Consider adding third tier (BeautifulSoup custom)
-
-### If Need Categories
-
-Add extruct as tier 3:
-```python
-# Tier 3: Extract categories from JSON-LD
-metadata = extruct.extract(html)
-categories = metadata['json-ld'][0]['articleSection']
-```
-
-### If Scaling to Non-News Sites
-
-Consider:
-- LLM hybrid for custom structures
-- Crawl4AI for JavaScript-heavy sites
-- go-Trafilatura for maximum performance
-
----
-
-## Conclusion
-
-**Final Solution:** Newspaper4k (primary) + Trafilatura (fallback)
-
-**Why it's optimal:**
-- ✅ 83% success rate
-- ✅ 0.55s average speed
-- ✅ Clean, article-only extraction
-- ✅ Free and open-source
-- ✅ Active maintenance
-- ✅ Simple codebase
-- ✅ Production-ready
-
-**When to reconsider:**
-- Success rate < 80%
-- Need > 95% success
-- Sites implement aggressive blocking
-- Requirements change (non-news content)
-
-This research validates that **simple, domain-specific tools beat complex, general-purpose solutions** for focused use cases.
+1. Build a redistribution-safe synthetic fixture set for additional Turkish publisher patterns.
+2. Add explicit precision/recall annotations before claiming comparative quality.
+3. Measure current live behavior on a versioned, legally reviewable URL-only corpus.
+4. Add per-domain adapters only when repeated evidence justifies the maintenance cost.
+5. Continue treating network security, extraction quality, and publisher availability as separate metrics.
