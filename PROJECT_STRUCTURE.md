@@ -1,9 +1,9 @@
 # Project Structure
 
-## Production Surface ⭐
+## Maintained Surface
 
 ### Source (`src/news_extractor/`)
-- `article_extractor.py` – Newspaper4k primary + Trafilatura fallback implementation (83% success / 0.55s avg).
+- `article_extractor.py` – Newspaper4k primary + Trafilatura fallback implementation; its 5/6 result and 0.55s average are a dated November 2025 snapshot.
 - `cli.py` – Powers the `news-extractor` executable and `python -m news_extractor.cli` flow.
 - `__init__.py` – Exposes `ArticleExtractor` and `extract_article` for downstream imports.
 
@@ -17,13 +17,15 @@
 
 ### Examples & Validation
 - `examples/batch_extraction.py` – Ready-made batch usage script importing the packaged module.
-- `tests/validation/test_ultimate_combo.py` – Live regression suite (83% pass target). Galleries remain out of scope by design.
+- `tests/unit/` – Deterministic package, fallback, backlog, and output tests run in GitHub Actions.
+- `tests/validation/test_ultimate_combo.py` – Opt-in live six-URL snapshot. Galleries remain out of scope by design.
 
 ## Operational Workflow
 1. **Bootstrap** – `poetry install`.
 2. **Integrate** – Import `ArticleExtractor` (Python jobs) or call the `news-extractor` CLI inside larger workflows/microservices.
-3. **Validate** – Run `poetry run python tests/validation/test_ultimate_combo.py` before promoting changes. Investigate any non-gallery failure.
-4. **Monitor** – Track success rate and fallback ratio as documented in `README.md` → drop below 80% triggers action.
+3. **Verify** – Run `poetry run pytest tests/unit` for the deterministic gate and build the package.
+4. **Validate live behavior** – Run `poetry run python tests/validation/test_ultimate_combo.py` when refreshing network-dependent evidence. Report publisher drift separately from code failures.
+5. **Monitor** – Track success rate and fallback ratio as documented in `README.md`; the recorded 83.3% is a dated six-URL snapshot, not an SLA.
 
 ## Archive (Historical Research) 📦
 All prior experimentation is frozen under `archive/legacy_research/`:
@@ -44,6 +46,8 @@ These assets are **deprecated**—do not import or execute them inside productio
 ```
 news-extractor/
 ├── README.md / RESEARCH.md
+├── .github/workflows/test.yml
+├── LICENSE
 ├── pyproject.toml
 ├── requirements.txt
 ├── src/
@@ -52,6 +56,7 @@ news-extractor/
 │       ├── article_extractor.py
 │       └── cli.py
 ├── tests/
+│   ├── unit/
 │   └── validation/test_ultimate_combo.py
 ├── examples/batch_extraction.py
 └── archive/
@@ -64,5 +69,5 @@ news-extractor/
         └── tests/research_archive/
 ```
 
-**Last Updated:** November 2025  
-**Status:** Production ready ✅ (galleries intentionally excluded)
+**Last Updated:** July 2026
+**Status:** Maintained research-backed library; deterministic CI is required, while live-site evidence remains opt-in and dated.

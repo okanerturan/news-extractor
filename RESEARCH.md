@@ -4,6 +4,8 @@
 **Objective:** Find the optimal solution for extracting article content from Turkish news websites
 **Result:** Newspaper4k + Trafilatura two-tier strategy with 83% success rate
 
+> Historical evidence: all rates, timings, dependency-status notes, and quoted evaluations in this document describe the November 2025 corpus. They are not current service guarantees. See `README.md` for the maintained project status and verification split.
+
 ---
 
 ## Executive Summary
