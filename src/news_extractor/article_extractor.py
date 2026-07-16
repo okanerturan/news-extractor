@@ -3,17 +3,19 @@
 Turkish News Article Extractor
 ===============================
 
-Production-ready article extraction with two-tier fallback strategy.
+Article extraction with a two-tier fallback strategy.
 
 Strategy:
     1. Primary: Newspaper4k (fast, clean extraction)
     2. Fallback: Trafilatura JSON (robust, handles edge cases)
 
-Performance:
-    - Success rate: 83%+
+Recorded November 2025 snapshot:
+    - Success rate: 5/6 fixed URLs
     - Average time: 0.55s per article
-    - Primary usage: 50% of cases
-    - Fallback usage: 33% of cases
+    - Primary usage: 3/6 URLs
+    - Fallback usage: 2/6 URLs
+
+These figures are dated research evidence, not a permanent service-level guarantee.
 
 Dependencies:
     pip install newspaper4k trafilatura requests
@@ -23,7 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -149,7 +151,7 @@ class ArticleExtractor:
                 'image': article.top_image,
                 'method': 'newspaper4k',
                 'text_length': len(article.text),
-                'extracted_at': datetime.utcnow().isoformat()
+                'extracted_at': datetime.now(timezone.utc).isoformat()
             }
 
         except Exception as exc:  # Newspaper4k raises several internal exceptions
@@ -214,7 +216,7 @@ class ArticleExtractor:
             'categories': data.get('categories'),
             'method': 'trafilatura',
             'text_length': len(text),
-            'extracted_at': datetime.utcnow().isoformat()
+            'extracted_at': datetime.now(timezone.utc).isoformat()
         }
 
     def extract_batch(self, urls: List[str]) -> Dict[str, Optional[Dict[str, Any]]]:

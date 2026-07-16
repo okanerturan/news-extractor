@@ -1,6 +1,21 @@
 # News Extractor (Turkish Article Extractor)
 
-Production-ready article extraction for Turkish news websites with **83%+ success rate** and **sub-second performance**.
+[![Test](https://github.com/okturan/news-extractor/actions/workflows/test.yml/badge.svg)](https://github.com/okturan/news-extractor/actions/workflows/test.yml)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](./pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+
+Python library and CLI for extracting structured Turkish news articles with a Newspaper4k primary path and a Trafilatura fallback. It also includes SQLite backlog reprocessing and JSONL inspection tools for evaluating extraction quality in a larger collection workflow.
+
+## Project status and evidence
+
+| Surface | Current evidence |
+|---|---|
+| Deterministic behavior | Offline unit tests cover primary extraction, fallback, failure handling, statistics, SQLite pagination, re-extraction, and JSONL output on Python 3.10 and 3.12 |
+| Packaging | Poetry-managed source package and CLI; CI builds wheel and source distribution artifacts |
+| Live validation | An opt-in six-URL snapshot recorded 5/6 successes (83.3%) in November 2025 |
+| Scope | Research-backed extraction library; not a hosted service or guaranteed publisher-wide SLA |
+
+News pages and upstream parsers change. The recorded success rate and timing below describe that fixed research snapshot, not a permanent production guarantee.
 
 ## Quick Start
 
@@ -25,12 +40,11 @@ Run tools through Poetry so the managed environment stays consistent, e.g. `poet
 
 ## Features
 
-- ✅ **83%+ success rate** on Turkish news sites
-- ✅ **0.55s average** extraction time
-- ✅ **Clean article-only text** (no ads, navigation, or boilerplate)
-- ✅ **Automatic fallback** for edge cases
-- ✅ **Rich metadata** (title, authors, date, keywords, image)
-- ✅ **Free and open-source**
+- Two-tier Newspaper4k → Trafilatura extraction.
+- Structured title, text, author, date, keyword, image, and method metadata.
+- Configurable minimum text length and request timeout.
+- Batch statistics plus SQLite backlog reprocessing and JSONL output.
+- Offline unit tests in CI and a separate opt-in live-site validation script.
 
 ## Installation
 
@@ -108,13 +122,15 @@ Tested and verified on:
 - ✅ Cumhuriyet
 - ✅ And more...
 
-### Performance Metrics
+### Recorded validation snapshot
+
+The repository's November 2025 research run used six fixed article URLs:
 
 Based on comprehensive testing:
 
 | Metric | Value |
 |--------|-------|
-| Success rate | 83.3% |
+| Success rate | 83.3% (5/6 URLs) |
 | Average time | 0.55s |
 | Primary success | 50% |
 | Fallback success | 33% |
@@ -202,42 +218,31 @@ From independent evaluation (Zyte/Scrapinghub):
 - **Trafilatura 2.0**: F1 0.958
 - **Newspaper4k**: F1 0.949 (our choice)
 
-We chose Newspaper4k despite slightly lower benchmark score because:
-- ✅ 100% success on Turkish sites (our specific use case)
-- ✅ Cleaner output (article-only, no related content)
-- ✅ No user-agent blocking issues
-- ✅ Python-native (no Go dependency)
+Newspaper4k remains the primary path because it produced clean output quickly on the supported URLs in the recorded snapshot and stays Python-native. Trafilatura handles short or failed primary extractions.
 
 ## Research Summary
 
 ### What We Tested
 
-1. ✅ **Newspaper4k** - Clean extraction, 100% on known sites
+1. ✅ **Newspaper4k** - Fast, clean primary extraction on supported snapshot URLs
 2. ✅ **Trafilatura 2.0** - User-agent blocking on Bianet
 3. ✅ **Crawl4AI** - LLM-powered, but 60s timeouts
 4. ✅ **LLM Hybrid** - Pre-clean + Claude, but Trafilatura JSON already structured
 5. ✅ **Extruct** - Schema.org metadata, but Newspaper4k has keywords
 6. ❌ **Dolphin** - Document OCR, not for web scraping
 
-### Expert Validation
-
-Two independent experts confirmed:
-- ✅ "Can't beat 100% success, free, sub-second" (Expert 2)
-- ✅ "Extruct for categories, but keywords already in Newspaper4k" (Expert 1)
-
 ### Key Insights
 
 1. **Newspaper4k `meta_keywords`** - Already extracts tags (no extruct needed!)
 2. **Trafilatura JSON** - Already structured (no LLM needed!)
 3. **User-agent bypass** - Fixes Bianet blocking
-4. **Two-tier beats single-tier** - 83% vs 50% success
+4. **Fallback improved the recorded snapshot** - 5/6 URLs succeeded with two tiers versus 3/6 with the primary alone
 
 ## Maintenance
 
-### Library Status
+### Dependency status
 
-- **Newspaper4k 0.9.3.1** - Last release: March 2024, Active maintenance
-- **Trafilatura 2.0** - Released January 2025, Actively maintained
+Runtime and development versions are pinned in `poetry.lock`. Refresh the lockfile deliberately and rerun both offline CI and the live validation snapshot before adopting upstream parser changes.
 
 ### Monitoring Recommendations
 
@@ -265,6 +270,8 @@ Update if:
 
 ```
 news-extractor/
+├── .github/workflows/test.yml # Python 3.10/3.12 unit + package build CI
+├── LICENSE                     # MIT license for original project code/docs
 ├── pyproject.toml              # Packaging + CLI entry point
 ├── requirements.txt            # `-e .` for local dev install
 ├── README.md / RESEARCH.md     # Product + research docs
@@ -273,8 +280,9 @@ news-extractor/
 │   ├── article_extractor.py    # Production module ⭐
 │   └── cli.py                  # `news-extractor` / `python -m news_extractor.cli`
 ├── tests/
+│   ├── unit/                   # Deterministic, network-free CI coverage
 │   └── validation/
-│       └── test_ultimate_combo.py  # Live validation (83% suite)
+│       └── test_ultimate_combo.py  # Opt-in six-URL live snapshot
 ├── examples/
 │   └── batch_extraction.py     # Batch usage sample
 └── archive/
@@ -290,8 +298,9 @@ news-extractor/
 
 1. **Bootstrap** – run `poetry install` (Poetry spawns the virtualenv automatically).
 2. **Integrate** – import `ArticleExtractor` or call `poetry run news-extractor …` inside your workflow/job.
-3. **Validate before deploys** – run `poetry run python tests/validation/test_ultimate_combo.py`. Galleries are intentionally ignored; all other regressions must be addressed.
-4. **Research reference** – anything under `archive/legacy_research` is frozen context only. Do not import from there in production pipelines.
+3. **Verify deterministic behavior** – run `poetry run pytest tests/unit`; CI executes this on Python 3.10 and 3.12 and builds distribution artifacts.
+4. **Refresh live evidence deliberately** – run `poetry run python tests/validation/test_ultimate_combo.py` when network-dependent behavior must be re-evaluated. Treat URL removals, publisher redesigns, and galleries separately from code regressions.
+5. **Research reference** – anything under `archive/legacy_research` is frozen context only. Do not import from there in production pipelines.
 
 ## Backlog Inspection Tools
 
@@ -320,11 +329,11 @@ Keep `backlog.jsonl` under version control only when sharing curated samples; ot
 
 ## Contributing
 
-This is a research project. Key decisions documented in `RESEARCH.md`.
+This is a research-backed library. Key extraction decisions are documented in `RESEARCH.md`; behavior changes should include deterministic tests and, when relevant, a separately reported live validation run.
 
 ## License
 
-Dependencies are MIT/Apache licensed. Check individual packages.
+Original source code and documentation are available under the [MIT License](./LICENSE). Third-party dependencies retain their own licenses. Captured publisher content, URLs, and research fixtures under `archive/legacy_research/` remain subject to their original owners' rights and are not relicensed by this repository.
 
 ## Support
 
