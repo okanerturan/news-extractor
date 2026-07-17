@@ -39,8 +39,10 @@ jobs:
         run: python -m pip check
       - name: Run deterministic unit suite
         run: python -m unittest discover -s tests/unit -v
+      - name: Reproduce versioned extraction-quality benchmark
+        run: python scripts/run_quality_benchmark.py --format markdown --check benchmarks/results/corpus-v1-v0.2.0.md
       - name: Compile active Python sources
-        run: python -m compileall -q src tests/unit tests/validation examples
+        run: python -m compileall -q src tests/unit tests/validation examples scripts
       - name: Exercise CLI entry point
         run: news-extractor --help
 

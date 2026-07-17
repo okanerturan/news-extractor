@@ -45,6 +45,10 @@ This design trades the broad heuristics of large third-party parser stacks for a
 
 ### Deterministic evidence
 
+The maintained implementation now has a [versioned synthetic quality corpus](./benchmarks/results/corpus-v1-v0.2.0.md). Corpus v1.0.0 is dated 2026-07-17, redistribution-safe, and records explicit expectations for structured extraction, semantic fallback, metadata normalization, page-chrome exclusion, relative image resolution, malformed/incomplete JSON-LD recovery, and rejection of navigation-only content. Its checked-in result is bound to the manifest and fixture bytes by SHA-256 and reproduced in CI on every supported Python lane.
+
+This is conformance evidence over declared synthetic cases. It is not presented as live-publisher recall, comparative accuracy, or an SLA; those claims require a separately versioned and legally reviewable live corpus.
+
 The unit suite is network-free and covers:
 
 - Turkish Unicode through structured and semantic extraction;

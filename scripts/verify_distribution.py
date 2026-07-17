@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -24,7 +25,26 @@ def verify(directory: Path) -> None:
     if requirements:
         raise SystemExit(f"unexpected runtime requirements: {requirements}")
 
+    required_source_evidence = {
+        "benchmarks/corpus-v1.json",
+        "benchmarks/results/corpus-v1-v0.2.0.md",
+        "docs/TRUST_BOUNDARY.md",
+        "scripts/run_quality_benchmark.py",
+        "tests/fixtures/jsonld_news_article.html",
+        "tests/fixtures/semantic_article.html",
+    }
+    with tarfile.open(source_distributions[0], "r:gz") as archive:
+        names = archive.getnames()
+    missing = sorted(
+        expected
+        for expected in required_source_evidence
+        if not any(name.endswith(f"/{expected}") for name in names)
+    )
+    if missing:
+        raise SystemExit(f"source distribution is missing reproducibility evidence: {missing}")
+
     print(f"verified {wheels[0].name}: no Requires-Dist metadata")
+    print(f"verified {source_distributions[0].name}: benchmark and trust-boundary evidence included")
 
 
 def main() -> None:
