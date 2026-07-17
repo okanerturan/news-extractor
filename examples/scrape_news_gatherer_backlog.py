@@ -86,13 +86,15 @@ def main(argv: Iterable[str] | None = None) -> int:
         print_pretty(results)
 
     stats = summarize(results)
+    summary_stream = sys.stderr if args.format == "json" else sys.stdout
     if stats["total"]:
         print(
             f"\nSummary: {stats['successes']}/{stats['total']} extractions succeeded "
-            f"({stats['success_rate']:.1f}% with min_text_length={args.min_text_length})."
+            f"({stats['success_rate']:.1f}% with min_text_length={args.min_text_length}).",
+            file=summary_stream,
         )
     else:
-        print("\nSummary: no rows processed.")
+        print("\nSummary: no rows processed.", file=summary_stream)
 
     return 0 if stats["successes"] else 3
 
