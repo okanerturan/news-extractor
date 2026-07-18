@@ -1,0 +1,11 @@
+include LICENSE
+include PROJECT_STRUCTURE.md
+include README.md
+include RESEARCH.md
+include SECURITY.md
+include benchmarks/corpus-v1.json
+include benchmarks/results/corpus-v1-v0.2.0.md
+include docs/TRUST_BOUNDARY.md
+include scripts/run_quality_benchmark.py
+recursive-include benchmarks/fixtures *.html
+recursive-include tests/fixtures *.html

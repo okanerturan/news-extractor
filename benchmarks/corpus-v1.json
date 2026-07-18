@@ -1,0 +1,121 @@
+{
+  "corpus_version": "1.0.0",
+  "as_of": "2026-07-17",
+  "scope": "Redistribution-safe deterministic Turkish article-extraction conformance corpus",
+  "cases": [
+    {
+      "id": "jsonld-rich-turkish",
+      "fixture": "../tests/fixtures/jsonld_news_article.html",
+      "url": "https://haber.example/haber/42",
+      "min_text_length": 100,
+      "expected": {
+        "extracted": true,
+        "method": "json-ld",
+        "title": "İstanbul'da kültür ve teknoloji buluşması",
+        "authors": ["Ayşe Şahin", "Mehmet Öztürk"],
+        "keywords": ["İstanbul", "açık kaynak", "teknoloji"],
+        "categories": ["Teknoloji", "Kültür"],
+        "image": "https://haber.example/images/bulusma.jpg",
+        "text_contains": ["Türkçe dil araçlarını"],
+        "text_excludes": ["kısa sayfa metni"]
+      }
+    },
+    {
+      "id": "semantic-chrome-exclusion",
+      "fixture": "../tests/fixtures/semantic_article.html",
+      "url": "https://haber.example/gundem/calistay",
+      "min_text_length": 100,
+      "expected": {
+        "extracted": true,
+        "method": "semantic-html",
+        "title": "Yapısal başlık ama gövde yok",
+        "authors": ["Elif Işık"],
+        "date": "2026-07-15T14:00:00+03:00",
+        "image": "https://haber.example/media/calistay.jpg",
+        "text_contains": ["bağımlılık yönetimi", "Güvenlik sonradan"],
+        "text_excludes": ["Üye ol", "reklam", "Telif"]
+      }
+    },
+    {
+      "id": "jsonld-graph-selection",
+      "fixture": "fixtures/jsonld_graph.html",
+      "url": "https://ornek.example/teknoloji/acik-veri",
+      "min_text_length": 100,
+      "expected": {
+        "extracted": true,
+        "method": "json-ld",
+        "title": "Açık veri platformu yeni sürümünü yayımladı",
+        "authors": ["Deniz Yılmaz"],
+        "categories": "Teknoloji",
+        "image": "https://ornek.example/assets/acik-veri.jpg",
+        "text_contains": ["doğrulanabilir veri kümelerini"],
+        "text_excludes": ["Sayfa menüsü"]
+      }
+    },
+    {
+      "id": "semantic-role-main",
+      "fixture": "fixtures/semantic_role_main.html",
+      "url": "https://ornek.example/kultur/arsiv",
+      "min_text_length": 100,
+      "expected": {
+        "extracted": true,
+        "method": "semantic-html",
+        "title": "Kent arşivi araştırmacılara açıldı",
+        "authors": ["Zeynep Çelik"],
+        "categories": "Kültür",
+        "text_contains": ["sayısallaştırılan belgeler", "kaynak gösterme kuralları"],
+        "text_excludes": ["Bültene kaydol", "Sponsorlu içerik"]
+      }
+    },
+    {
+      "id": "incomplete-jsonld-fallback",
+      "fixture": "fixtures/incomplete_jsonld.html",
+      "url": "https://ornek.example/bilim/gozlem",
+      "min_text_length": 100,
+      "expected": {
+        "extracted": true,
+        "method": "semantic-html",
+        "title": "Gözlem istasyonu ilk verilerini paylaştı",
+        "authors": ["Mert Kaya"],
+        "text_contains": ["ölçüm sonuçlarını bağımsız ekiplerle"],
+        "text_excludes": ["çok kısa yapılandırılmış gövde"]
+      }
+    },
+    {
+      "id": "malformed-jsonld-fallback",
+      "fixture": "fixtures/malformed_jsonld.html",
+      "url": "https://ornek.example/gundem/rapor",
+      "min_text_length": 100,
+      "expected": {
+        "extracted": true,
+        "method": "semantic-html",
+        "title": "Yerel yönetim erişilebilirlik raporu yayımladı",
+        "text_contains": ["ekran okuyucu uyumluluğu", "klavye ile gezinme"],
+        "text_excludes": ["Alt menü"]
+      }
+    },
+    {
+      "id": "relative-image-resolution",
+      "fixture": "fixtures/relative_image.html",
+      "url": "https://ornek.example/haber/baslangic",
+      "final_url": "https://cdn.ornek.example/yazi/son",
+      "min_text_length": 100,
+      "expected": {
+        "extracted": true,
+        "method": "json-ld",
+        "title": "Kıyı araştırması açık yöntemle tamamlandı",
+        "image": "https://cdn.ornek.example/media/kiyi.jpg",
+        "text_contains": ["ham ölçümleri ve analiz betiklerini"]
+      }
+    },
+    {
+      "id": "navigation-only-rejection",
+      "fixture": "fixtures/navigation_only.html",
+      "url": "https://ornek.example/liste",
+      "min_text_length": 80,
+      "expected": {
+        "extracted": false
+      }
+    }
+  ]
+}

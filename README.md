@@ -19,6 +19,9 @@ This is a library and research project, not a hosted scraping service. The usefu
 | Compatibility | `ArticleExtractor`, `extract_article`, batch/stats, CLI, and backlog helpers remain available |
 | Unicode | Deterministic Turkish fixtures cover `İ`, `ı`, `ş`, `ğ`, `ü`, `ö`, and `ç` end to end |
 | Automation | Pinned, least-privilege CI across Python 3.10, 3.12, and 3.14 plus package installation smoke tests |
+| Quality benchmark | [Versioned corpus v1](./benchmarks/results/corpus-v1-v0.2.0.md) records explicit extraction, field, and content expectations with a reproducible corpus hash |
+
+The benchmark is deliberately a conformance result, not a decorative test count or claimed live-publisher accuracy rate. Its fixtures are synthetic and redistribution-safe; publisher availability remains a separate opt-in validation surface.
 
 ## Install
 
@@ -93,6 +96,8 @@ The CLI exits `0` only when every requested URL succeeds, `1` when any extractio
 7. If structured article text is absent or too short, collect paragraph and blockquote content from semantic `<article>`/`<main>` regions while excluding navigation, forms, scripts, styles, sidebars, and footers.
 
 The parser returns `None` when the fetch or extraction fails, matching the original public API. Operational diagnostics are emitted through Python logging.
+
+See the [trust-boundary diagram](./docs/TRUST_BOUNDARY.md) for the supplied-HTML path, URL/DNS/socket boundary, parser surface, and caller-owned output responsibilities.
 
 ## Response shape
 
@@ -187,8 +192,18 @@ The required suite is deterministic and network-free:
 python -m pip install --no-deps --editable .
 python -m pip check
 python -m unittest discover -s tests/unit -v
-python -m compileall -q src tests/unit tests/validation examples
+python -m compileall -q src tests/unit tests/validation examples scripts
 ```
+
+Reproduce the checked-in extraction-quality result:
+
+```bash
+python scripts/run_quality_benchmark.py \
+  --format markdown \
+  --check benchmarks/results/corpus-v1-v0.2.0.md
+```
+
+The corpus manifest declares its version, date, denominator, fixture paths, and exact expected decisions. The runner hashes the manifest plus fixture bytes, so an edited corpus cannot silently retain an old result.
 
 Build and inspect distributions:
 
