@@ -28,10 +28,10 @@ dependencies = []
 news-extractor = "news_extractor.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/okturan/news-extractor"
-Repository = "https://github.com/okturan/news-extractor"
-Issues = "https://github.com/okturan/news-extractor/issues"
-Research = "https://github.com/okturan/news-extractor/blob/master/RESEARCH.md"
+Homepage = "https://github.com/okanerturan/news-extractor"
+Repository = "https://github.com/okanerturan/news-extractor"
+Issues = "https://github.com/okanerturan/news-extractor/issues"
+Research = "https://github.com/okanerturan/news-extractor/blob/master/RESEARCH.md"
 
 [tool.setuptools]
 package-dir = { "" = "src" }

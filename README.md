@@ -1,6 +1,6 @@
 # News Extractor
 
-[![Test](https://github.com/okturan/news-extractor/actions/workflows/test.yml/badge.svg)](https://github.com/okturan/news-extractor/actions/workflows/test.yml)
+[![Test](https://github.com/okanerturan/news-extractor/actions/workflows/test.yml/badge.svg)](https://github.com/okanerturan/news-extractor/actions/workflows/test.yml)
 [![Python 3.10–3.14](https://img.shields.io/badge/Python-3.10%E2%80%933.14-3776AB?logo=python&logoColor=white)](./pyproject.toml)
 [![Runtime dependencies: 0](https://img.shields.io/badge/runtime%20dependencies-0-2ea44f)](./pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
