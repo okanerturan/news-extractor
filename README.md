@@ -1,6 +1,6 @@
 # News Extractor
 
-[![Test](https://github.com/okturan/news-extractor/actions/workflows/test.yml/badge.svg)](https://github.com/okturan/news-extractor/actions/workflows/test.yml)
+[![Test](https://github.com/okanerturan/news-extractor/actions/workflows/test.yml/badge.svg)](https://github.com/okanerturan/news-extractor/actions/workflows/test.yml)
 [![Python 3.10–3.14](https://img.shields.io/badge/Python-3.10%E2%80%933.14-3776AB?logo=python&logoColor=white)](./pyproject.toml)
 [![Runtime dependencies: 0](https://img.shields.io/badge/runtime%20dependencies-0-2ea44f)](./pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
@@ -92,10 +92,14 @@ The CLI exits `0` only when every requested URL succeeds, `1` when any extractio
 3. Connect the socket to the vetted address while preserving the original hostname for TLS verification and the `Host` header.
 4. Repeat validation for every redirect, share the original deadline across the full chain, and reject HTTPS-to-HTTP downgrades.
 5. Require HTML/XHTML, identity encoding, a bounded response body, a bounded redirect count, and an absolute deadline that cannot be extended by slow headers or body bytes.
-6. Parse schema.org JSON-LD and select the strongest `NewsArticle` or `Article` candidate.
-7. If structured article text is absent or too short, collect paragraph and blockquote content from semantic `<article>`/`<main>` regions while excluding navigation, forms, scripts, styles, sidebars, and footers.
+6. Check for article signals (`og:type=article`, `NewsArticle`/`Article` JSON-LD, a single `<article>` with enough text, or a `<main>` holding one story). Landing pages, section fronts, and stub pages such as example.com fail here.
+7. Parse schema.org JSON-LD and select the strongest `NewsArticle` or `Article` candidate.
+8. Collect paragraph and blockquote content from semantic `<article>`/`<main>` regions, excluding navigation, forms, tables, scripts, styles, sidebars, footers, and containers whose class or id marks them as share widgets, related lists, or bylines.
+9. Clean both bodies (sentence glue repaired, whitespace normalized, follow-us lines, bylines, related lists, and dumped tables removed). The JSON-LD body wins unless it is missing or under 40% of the page body, in which case `method` reports `semantic-html`.
 
-The parser returns `None` when the fetch or extraction fails, matching the original public API. Operational diagnostics are emitted through Python logging.
+The boilerplate rules are plain data lists in [`cleaning.py`](./src/news_extractor/cleaning.py); add a publisher's phrase there to strip it. Keywords that are site-wide boilerplate (`son dakika`, `fotoğraf`, `video`, ...) are dropped, and `article:tag` metadata is used when `keywords` is empty.
+
+The parser returns `None` when the fetch or extraction fails, matching the original public API. The reason (`not-an-article`, `text-too-short`, `fetch-failed`, ...) is left in `ArticleExtractor.last_error` and printed by the CLI. Operational diagnostics are emitted through Python logging.
 
 See the [trust-boundary diagram](./docs/TRUST_BOUNDARY.md) for the supplied-HTML path, URL/DNS/socket boundary, parser surface, and caller-owned output responsibilities.
 

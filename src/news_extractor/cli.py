@@ -125,8 +125,9 @@ def main(argv: Iterable[str] | None = None) -> int:
                 _print_pretty(url, article)
         else:
             safe_url = _safe_url_for_log(url)
-            logger.error("Extraction failed for url=%s", safe_url)
-            print(f"❌ Failed to extract: {safe_url}", file=sys.stderr)
+            reason = _safe_terminal_text(extractor.last_error or "unknown")
+            logger.error("Extraction failed for url=%s reason=%s", safe_url, reason)
+            print(f"❌ Failed to extract: {safe_url} ({reason})", file=sys.stderr)
 
     all_success = successes == len(args.urls)
     return 0 if all_success else 1

@@ -28,6 +28,13 @@ from html.parser import HTMLParser
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
+from .cleaning import (
+    clean_body,
+    filter_keywords,
+    has_ignored_attributes,
+    normalize_whitespace,
+)
+
 logger = logging.getLogger(__name__)
 
 _ALLOWED_CONTENT_TYPES = {"text/html", "application/xhtml+xml"}
@@ -52,8 +59,26 @@ _IGNORED_TAGS = {
     "script",
     "style",
     "svg",
+    "table",
     "template",
 }
+_VOID_TAGS = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+    "meta", "param", "source", "track", "wbr",
+}
+# Tags whose boundaries separate words, so text on either side never glues.
+_BREAK_TAGS = {
+    "br", "div", "p", "li", "ul", "ol", "section", "tr", "td", "th", "figure",
+    "figcaption", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre",
+}
+_PARAGRAPH_BREAK_TAGS = {
+    "p", "div", "li", "section", "h1", "h2", "h3", "h4", "h5", "h6",
+    "blockquote", "br", "tr", "figure", "figcaption", "ul", "ol",
+}
+_NON_CONTENT_ROLES = {"navigation", "banner", "contentinfo", "complementary"}
+# Use the structured body only if it is at least this share of the page body.
+_STRUCTURED_MIN_RATIO = 0.4
+_FLAT_MIN_RATIO = 1.1
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 _WHITESPACE = re.compile(r"\s+")
 _ANSI_OSC = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
@@ -403,7 +428,7 @@ class SafeHTTPClient:
         max_response_bytes: int = 2_000_000,
         max_redirects: int = 5,
         allow_private_networks: bool = False,
-        user_agent: str = "news-extractor/0.2 (+https://github.com/okturan/news-extractor)",
+        user_agent: str = "news-extractor/0.2 (+https://github.com/okanerturan/news-extractor)",
         resolver: Callable[..., Sequence[tuple[Any, ...]]] = socket.getaddrinfo,
     ) -> None:
         if not math.isfinite(timeout) or timeout <= 0:
@@ -711,6 +736,12 @@ class _ArticleHTMLParser(HTMLParser):
         self.all_blocks: list[str] = []
         self.semantic_blocks: list[str] = []
         self.semantic_parts: list[str] = []
+        self.article_texts: list[int] = []
+        self.main_chars = 0
+        self.main_link_chars = 0
+        self.main_h1_count = 0
+        self._anchor_depth = 0
+        self._article_stack: list[int] = []
         self._frames: list[tuple[str, bool, bool]] = []
         self._blocks: list[_Block] = []
         self._ignored_depth = 0
@@ -738,12 +769,33 @@ class _ArticleHTMLParser(HTMLParser):
             if script_type == "application/ld+json":
                 self._json_ld_parts = []
 
-        ignored = tag in _IGNORED_TAGS
+        ignored = tag in _IGNORED_TAGS or (
+            tag not in _VOID_TAGS
+            and tag not in {"html", "body", "main", "article"}
+            and (
+                attributes.get("role", "").lower() in _NON_CONTENT_ROLES
+                or has_ignored_attributes(
+                    attributes.get("class", ""),
+                    attributes.get("id", ""),
+                    attributes.get("data-testid", ""),
+                )
+            )
+        )
         semantic = (
             not ignored
             and self._ignored_depth == 0
             and (tag in {"article", "main"} or attributes.get("role", "").lower() == "main")
         )
+        if tag in _VOID_TAGS:
+            if tag in _BREAK_TAGS:
+                self._separate()
+            return
+        if tag in _BREAK_TAGS:
+            self._separate()
+        if tag == "article":
+            self._article_stack.append(0)
+        if tag == "a":
+            self._anchor_depth += 1
         self._frames.append((tag, ignored, semantic))
         if ignored:
             self._ignored_depth += 1
@@ -771,6 +823,22 @@ class _ArticleHTMLParser(HTMLParser):
             self.semantic_parts.append(data)
         if self._blocks:
             self._blocks[-1].parts.append(data)
+        if self._article_stack:
+            self._article_stack[-1] += len(data.strip())
+        if self._semantic_depth:
+            size = len(data.strip())
+            self.main_chars += size
+            if self._anchor_depth:
+                self.main_link_chars += size
+
+    def _separate(self) -> None:
+        """Insert a word break so adjacent text nodes never glue together."""
+        if self._ignored_depth:
+            return
+        if self._semantic_depth:
+            self.semantic_parts.append(" ")
+        if self._blocks:
+            self._blocks[-1].parts.append(" ")
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
@@ -780,14 +848,18 @@ class _ArticleHTMLParser(HTMLParser):
                 self.json_ld.append(payload)
             self._json_ld_parts = None
 
+        if tag in _BREAK_TAGS:
+            self._separate()
+
         if tag in {"p", "blockquote", "li", "h1"}:
             for index in range(len(self._blocks) - 1, -1, -1):
                 if self._blocks[index].tag == tag:
                     block = self._blocks.pop(index)
-                    text = _clean_text(" ".join(block.parts))
+                    text = _clean_text("".join(block.parts))
                     if text:
                         if tag == "h1":
                             self.headings.append(text)
+                            self.main_h1_count += block.semantic
                         else:
                             if tag != "li" or block.semantic:
                                 self.all_blocks.append(text)
@@ -795,8 +867,14 @@ class _ArticleHTMLParser(HTMLParser):
                                 self.semantic_blocks.append(text)
                     break
 
+        if tag in _VOID_TAGS or not any(frame[0] == tag for frame in self._frames):
+            return
         while self._frames:
             frame_tag, ignored, semantic = self._frames.pop()
+            if frame_tag == "a":
+                self._anchor_depth = max(0, self._anchor_depth - 1)
+            if frame_tag == "article" and self._article_stack:
+                self.article_texts.append(self._article_stack.pop())
             if ignored:
                 self._ignored_depth = max(0, self._ignored_depth - 1)
             if semantic:
@@ -814,12 +892,22 @@ class _PlainTextParser(HTMLParser):
         self.ignored_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag.lower() in _IGNORED_TAGS:
+        tag = tag.lower()
+        if tag in _IGNORED_TAGS:
             self.ignored_depth += 1
+        elif tag in _PARAGRAPH_BREAK_TAGS and not self.ignored_depth:
+            self.parts.append("\n")
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in _PARAGRAPH_BREAK_TAGS and not self.ignored_depth:
+            self.parts.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
-        if tag.lower() in _IGNORED_TAGS:
+        tag = tag.lower()
+        if tag in _IGNORED_TAGS:
             self.ignored_depth = max(0, self.ignored_depth - 1)
+        elif tag in _PARAGRAPH_BREAK_TAGS and not self.ignored_depth:
+            self.parts.append("\n")
 
     def handle_data(self, data: str) -> None:
         if not self.ignored_depth:
@@ -835,16 +923,17 @@ def _clean_text(value: Any) -> str:
 
 
 def _strip_markup(value: Any) -> str:
+    """Turn a JSON-LD body (plain or HTML) into text with paragraphs on new lines."""
     if isinstance(value, (list, tuple)):
-        text = " ".join(str(item) for item in value if item is not None)
+        text = "\n".join(str(item) for item in value if item is not None)
     else:
         text = str(value or "")
-    if not re.search(r"<[A-Za-z][^>]*>", text):
-        return _clean_text(text)
-    parser = _PlainTextParser()
-    parser.feed(text)
-    parser.close()
-    return _clean_text(" ".join(parser.parts))
+    if re.search(r"<[A-Za-z][^>]*>", text):
+        parser = _PlainTextParser()
+        parser.feed(text)
+        parser.close()
+        text = "".join(parser.parts)
+    return normalize_whitespace(unescape(text))
 
 
 def _dedupe(values: Iterable[str]) -> list[str]:
@@ -934,6 +1023,7 @@ class ArticleExtractor:
         self.max_response_bytes = int(max_response_bytes)
         self.max_redirects = int(max_redirects)
         self.allow_private_networks = allow_private_networks
+        self.last_error: str | None = None
         self.http_client = http_client or SafeHTTPClient(
             timeout=timeout,
             max_response_bytes=max_response_bytes,
@@ -942,7 +1032,11 @@ class ArticleExtractor:
         )
 
     def extract(self, url: str) -> Optional[Dict[str, Any]]:
-        """Download and extract one article, returning ``None`` on failure."""
+        """Download and extract one article, returning ``None`` on failure.
+
+        The reason for a failure is left in ``self.last_error``.
+        """
+        self.last_error = None
         try:
             document = self.http_client.fetch(url)
             return self.extract_html(
@@ -951,6 +1045,7 @@ class ArticleExtractor:
                 final_url=document.final_url,
             )
         except (FetchError, OSError, ValueError) as exc:
+            self.last_error = f"fetch-failed: {_safe_error_for_log(exc)}"
             logger.warning(
                 "Article extraction failed for url=%s: %s",
                 _safe_url_for_log(url),
@@ -974,38 +1069,18 @@ class ArticleExtractor:
             parser.feed(html)
             parser.close()
         except (ValueError, AssertionError, RecursionError) as exc:
-            logger.debug(
-                "HTML parser rejected url=%s: %s",
-                _safe_url_for_log(url),
-                _safe_error_for_log(exc),
-            )
-            return None
+            return self._fail(url, f"html-parse-failed: {_safe_error_for_log(exc)}")
 
-        structured = self._best_json_ld(parser.json_ld)
-        structured_text = _strip_markup(structured.get("articleBody")) if structured else ""
-        method = "json-ld"
-
-        if len(structured_text) >= self.min_text_length:
-            text = structured_text
-        else:
-            method = "semantic-html"
-            blocks = parser.semantic_blocks or parser.all_blocks
-            blocks = _dedupe(block for block in blocks if len(_clean_text(block)) >= 20)
-            text = "\n\n".join(blocks)
-            if len(text) < self.min_text_length:
-                semantic_text = _clean_text(" ".join(parser.semantic_parts))
-                if len(semantic_text) > len(text):
-                    text = semantic_text
-
-        if len(text) < self.min_text_length:
-            logger.debug(
-                "Extracted text too short for url=%s (len=%s)",
-                _safe_url_for_log(url),
-                len(text),
-            )
-            return None
-
+        candidates = self._json_ld_articles(parser.json_ld)
+        structured = self._best_json_ld(candidates)
         metadata = structured or {}
+        if not self._has_article_signal(parser, structured, len(candidates)):
+            return self._fail(
+                url,
+                "not-an-article: no article signals (og:type, NewsArticle JSON-LD, "
+                "or a single <article> with enough text)",
+            )
+
         title = _clean_text(
             metadata.get("headline")
             or metadata.get("name")
@@ -1013,13 +1088,46 @@ class ArticleExtractor:
             or (parser.headings[0] if parser.headings else "")
             or " ".join(parser.title_parts)
         )
+
+        structured_text = clean_body(
+            _strip_markup(structured.get("articleBody")) if structured else "", title
+        )
+        blocks = parser.semantic_blocks or parser.all_blocks
+        blocks = _dedupe(block for block in blocks if len(_clean_text(block)) >= 20)
+        semantic_text = clean_body("\n\n".join(blocks), title)
+        if len(semantic_text) < self.min_text_length:
+            loose = clean_body(_clean_text("".join(parser.semantic_parts)), title)
+            if len(loose) > len(semantic_text):
+                semantic_text = loose
+
+        # Prefer the structured body unless it is missing or much shorter than
+        # the page body (JSON-LD often carries only the description).
+        # A structured body that arrives as one unbroken blob loses to a
+        # paragraphed page body of about the same size.
+        flat = "\n\n" not in structured_text and semantic_text.count("\n\n") >= 2
+        if len(structured_text) >= self.min_text_length and len(structured_text) >= (
+            (_FLAT_MIN_RATIO if flat else _STRUCTURED_MIN_RATIO) * len(semantic_text)
+        ):
+            method, text = "json-ld", structured_text
+        else:
+            method, text = "semantic-html", semantic_text
+
+        if len(text) < self.min_text_length:
+            return self._fail(url, f"text-too-short: {len(text)} chars after cleanup")
+        self.last_error = None
+
         authors = _list_value(metadata.get("author")) or _list_value(
             self._first_meta(parser, "author", "article:author")
         )
-        keywords = _list_value(metadata.get("keywords"), split_commas=True) or _list_value(
-            self._first_meta(parser, "keywords", "news_keywords"),
-            split_commas=True,
-        )
+        keywords: list[str] = []
+        for candidate in (
+            _list_value(metadata.get("keywords"), split_commas=True),
+            _list_value(self._first_meta(parser, "keywords", "news_keywords"), split_commas=True),
+            _list_value(parser.metadata.get("article:tag") or parser.metadata.get("og:article:tag")),
+        ):
+            keywords = filter_keywords(candidate)
+            if keywords:
+                break
         description = _clean_text(
             metadata.get("description")
             or self._first_meta(parser, "og:description", "twitter:description", "description")
@@ -1072,6 +1180,41 @@ class ArticleExtractor:
             "extracted_at": datetime.now(timezone.utc).isoformat(),
         }
 
+    def _fail(self, url: str, reason: str) -> None:
+        self.last_error = reason
+        logger.debug("Extraction rejected for url=%s: %s", _safe_url_for_log(url), reason)
+        return None
+
+    def _has_article_signal(
+        self,
+        parser: _ArticleHTMLParser,
+        structured: Mapping[str, Any] | None,
+        json_ld_count: int,
+    ) -> bool:
+        """Cheap is-this-an-article check so landing pages and stubs are refused."""
+        og_type = (self._first_meta(parser, "og:type") or "").strip().lower()
+        if og_type.startswith("article"):
+            return True
+        # Several article objects on one page without og:type=article is a listing.
+        if structured is not None and json_ld_count < 3:
+            return True
+        # A single dominant <article> with real text (teaser grids have many small ones).
+        texts = parser.article_texts
+        if texts:
+            largest = max(texts)
+            if largest >= self.min_text_length and largest * 2 >= sum(texts):
+                return True
+        # A <main>/role=main holding one story: one h1 and mostly plain text,
+        # not a grid of linked teasers.
+        if (
+            parser.main_h1_count <= 1
+            and parser.main_chars >= self.min_text_length
+            and parser.main_link_chars * 3 <= parser.main_chars
+            and len(parser.semantic_blocks) >= 2
+        ):
+            return True
+        return False
+
     @staticmethod
     def _first_meta(parser: _ArticleHTMLParser, *keys: str) -> str | None:
         for key in keys:
@@ -1081,7 +1224,7 @@ class ArticleExtractor:
         return None
 
     @staticmethod
-    def _best_json_ld(payloads: Iterable[str]) -> Mapping[str, Any] | None:
+    def _json_ld_articles(payloads: Iterable[str]) -> list[Mapping[str, Any]]:
         candidates: list[Mapping[str, Any]] = []
         for payload in payloads:
             cleaned = payload.strip()
@@ -1097,7 +1240,10 @@ class ArticleExtractor:
             for candidate in _iter_dicts(document):
                 if _short_type(candidate.get("@type")) & _ARTICLE_TYPES:
                     candidates.append(candidate)
+        return candidates
 
+    @staticmethod
+    def _best_json_ld(candidates: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
         if not candidates:
             return None
 
